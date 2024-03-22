@@ -1,9 +1,33 @@
 #include "doip_entity.h"
+#include "doip_stream.h"
 #include "list.h"
 
 #include <ev.h>
+#include <errno.h>
 #include <assert.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
+#define MIN(x,y) ((x)>(y) ? (y) : (x))
+
+enum {
+	UNINITIALIZED,
+	INITIALIZED,
+};
+
+typedef struct doip_pdu_t {
+	uint8_t protocol;
+	uint8_t inverse;
+	uint16_t payload_type;
+	uint32_t payload_len;
+	uint32_t payload_cap;
+	uint32_t data_len;
+	uint8_t *payload;
+} doip_pdu_t;
 
 typedef struct doip_client {
 	uint8_t status;
@@ -23,68 +47,226 @@ typedef struct doip_server {
 	char addr[32];
 	uint16_t port;
 	ev_io *watcher;
+	uint16_t client_nums;
+#define MAX_DOIP_PDU_SIZE  (0x10000)
+	doip_pdu_t doip_pdu;
 	struct list_head head;
 	doip_entity_t *doip_entity;
 } doip_server_t;
 
 struct doip_entity {
+	char vin[20];
+	uint8_t eid[6];
+	uint8_t gid[6];
 	void *userdata;
 	uint16_t logic_addr;
 	uint16_t func_addr;
 	uint16_t *white_list;
 	uint16_t white_list_count;
-	int initial_activity_time;
-	int general_activity_time;
+	double initial_activity_time;
+	double general_activity_time;
 	int announce_wait_time;
 	int announce_count;
-	int announce_internal;
+	double announce_internal;
 	doip_server_t tcp_server;
 	doip_server_t udp_server;
 	ev_prepare *prepare_w;
-#ifdef EV_MULTIPLICITY
 	struct ev_loop *loop;
-#else
-	int loop;
-#endif
 };
 
-static void doip_assert(uint8_t expr, const char *comment)
+static void update_doip_header_len(uint8_t *data, int len, uint32_t payload_len)
 {
-	if (!expr) {
-		printf("%s\n", comment);
-		assert(expr);
+	STREAM_T strm;
+
+	if (len > 8) {
+		YX_InitStrm(&strm, data, len);
+		YX_MovStrmPtr(&strm, 4);
+		YX_WriteLONG_Strm(&strm, payload_len);
 	}
 }
 
-doip_entity_t *doip_entity_alloc()
+static int assemble_doip_header(uint8_t *data, int len, uint16_t payload_type, uint32_t payload_len)
 {
-	doip_entity_t *doip_entity = malloc(sizeof(*doip_entity));
+	STREAM_T strm;
 
-	if (!doip_entity) {
-		return NULL;
+	YX_InitStrm(&strm, data, len);
+	YX_WriteBYTE_Strm(&strm, 0x02);
+	YX_WriteBYTE_Strm(&strm, 0xfd);
+	YX_WriteHWORD_Strm(&strm, payload_type);
+	YX_WriteLONG_Strm(&strm, payload_len);
+	return YX_GetStrmLen(&strm);
+}
+
+static ssize_t udp_server_send(doip_entity_t *doip_entity, uint8_t *data, int len)
+{
+	if (!(doip_entity && doip_entity->udp_server.status == INITIALIZED && doip_entity->udp_server.handler > 0)) {
+		return 0;
 	}
 
-	bzero(doip_entity, sizeof(*doip_entity));
-	doip_entity->loop = ev_default_loop(0);
-	doip_entity->prepare_w = malloc(sizeof(ev_prepare));
-	doip_entity->tcp_server.watcher = malloc(sizeof(ev_io));
-	doip_entity->udp_server.watcher = malloc(sizeof(ev_io));
+	return send(doip_entity->udp_server.handler, data, len, 0);
+}
 
-	doip_entity->tcp_server.doip_entity = doip_entity;
-	doip_entity->udp_server.doip_entity = doip_entity;
+static ssize_t tcp_server_send(doip_entity_t *doip_entity, uint8_t *data, int len)
+{
+	ssize_t count = 0, total = 0;
 
-	doip_assert(doip_entity->loop && \
-			doip_entity->prepare_w && \
-			doip_entity->tcp_server.watcher && \
-			doip_entity->udp_server.watcher, "malloc failed");
+	if (!(doip_entity && doip_entity->tcp_server.status == INITIALIZED && doip_entity->tcp_server.handler > 0)) {
+		return 0;
+	}
 
-	doip_entity->initial_activity_time = 1;
-	doip_entity->general_activity_time = 1;
-	doip_entity->announce_count = 3;
-	doip_entity->announce_internal = 1;
-	doip_entity->announce_wait_time = 300;
+	for (; ;) {
+		count = send(doip_entity->tcp_server.handler, data + total, len - total, 0);
+		total += count;
+		if (total == len) {
+			break;
+		}
+		if (count < 0) {
+			break;
+		}
+	}
 
-	return doip_entity;
+	return total;
+}
+
+static ssize_t send_generic_header_nack(doip_entity_t *doip_entity, int nack)
+{
+	STREAM_T strm;
+	uint8_t buffer[16] = {0};
+
+	YX_InitStrm(&strm, buffer, sizeof(buffer));
+	YX_MovStrmPtr(&strm, assemble_doip_header(YX_GetStrmPtr(&strm), YX_GetStrmLeftLen(&strm), Generic_Doip_Header_Negative_Ack, 0));
+	YX_WriteBYTE_Strm(&strm, nack);
+	update_doip_header_len(YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), YX_GetStrmLen(&strm) - 8);
+
+	return udp_server_send(doip_entity, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm));
+}
+
+static int udp_doip_header_verify(doip_pdu_t *doip_pdu, int *errcode)
+{
+	if (!((doip_pdu->protocol == 0x00 && doip_pdu->inverse == 0xff) || \
+		(doip_pdu->protocol == 0x01 && doip_pdu->inverse == 0xfe) || \
+		(doip_pdu->protocol == 0x02 && doip_pdu->inverse == 0xfd))) {
+		*errcode = Header_NACK_Incorrect_Pattern_Format;
+		return -1;
+	}
+
+	if (!((doip_pdu->payload_type == Generic_Doip_Header_Negative_Ack) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message_With_EID) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message_With_VIN) || \
+		(doip_pdu->payload_type == Doip_Entity_Status_Request) || \
+		(doip_pdu->payload_type == Diagnotic_Powermode_Information_Request))) {
+		*errcode = Header_NACK_Unknow_Payload_type;
+		return -1;
+	}
+
+	if (doip_pdu->data_len > MAX_DOIP_PDU_SIZE/2) {
+		*errcode = Header_NACK_Message_Too_Large;
+		return -1;
+	}
+
+	if (doip_pdu->data_len > MAX_DOIP_PDU_SIZE * 2/3) {
+		*errcode = Header_NACK_Out_Of_Memory;
+		return -1;
+	}
+
+	if (!((doip_pdu->payload_type == Generic_Doip_Header_Negative_Ack && doip_pdu->data_len == 9) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message && doip_pdu->data_len == 8) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message_With_EID && doip_pdu->data_len == 14) || \
+		(doip_pdu->payload_type == Vehicle_Identify_Request_Message_With_VIN && doip_pdu->data_len == 25) || \
+		(doip_pdu->payload_type == Doip_Entity_Status_Request && doip_pdu->data_len == 8) || \
+		(doip_pdu->payload_type == Diagnotic_Powermode_Information_Request && doip_pdu->data_len == 8))) {
+		*errcode = Header_NACK_Invalid_Payload_Len;
+		return -1;
+	}
+
+	return 0;
+}
+
+static int disassemble_doip_header(uint8_t *data, uint32_t len, doip_pdu_t *doip_pdu)
+{
+	STREAM_T strm;
+
+	if (len < 8) {
+		return -1;
+	}
+
+	YX_InitStrm(&strm, data, len);
+	doip_pdu->protocol = YX_ReadBYTE_Strm(&strm);
+	doip_pdu->inverse = YX_ReadBYTE_Strm(&strm);
+	doip_pdu->payload_type = YX_ReadHWORD_Strm(&strm);
+	doip_pdu->payload_len = YX_ReadLONG_Strm(&strm);
+	doip_pdu->data_len = len;
+
+	logd("protocol:0x%02x\n", doip_pdu->protocol);
+	logd("inverse:0x%02x\n", doip_pdu->inverse);
+	logd("payload_type:0x%04x\n", doip_pdu->payload_type);
+	logd("payload_len:0x%08x\n", doip_pdu->payload_len);
+
+	return YX_GetStrmLen(&strm);
+}
+
+static int __vehicle_identify_announce(doip_entity_t *doip_entity)
+{
+	STREAM_T strm;
+	uint8_t buffer[64] = {0};
+	struct sockaddr_in target;
+
+	YX_InitStrm(&strm, buffer, sizeof(buffer));
+	YX_MovStrmPtr(&strm, assemble_doip_header(YX_GetStrmPtr(&strm), YX_GetStrmLeftLen(&strm), Vehicle_Announcememt_Message, 0));
+	YX_WriteDATA_Strm(&strm, (uint8_t *)doip_entity->vin, 17);
+	YX_WriteHWORD_Strm(&strm, doip_entity->logic_addr);
+	YX_WriteDATA_Strm(&strm, doip_entity->eid, sizeof(doip_entity->eid));
+	YX_WriteDATA_Strm(&strm, doip_entity->gid, sizeof(doip_entity->gid));
+	YX_WriteBYTE_Strm(&strm, 0x00);
+	YX_WriteBYTE_Strm(&strm, 0x00);
+
+	update_doip_header_len(YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), YX_GetStrmLen(&strm) - 8);
+
+	bzero(&target, sizeof(target));
+	target.sin_family = AF_INET;
+	target.sin_port = htobe16(UDP_DISCOVERY);
+	inet_pton(AF_INET, "255.255.255.255", &target.sin_addr);
+
+	return sendto(doip_entity->udp_server.handler, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), 0, (struct sockaddr *)&target, sizeof(target));
+}
+
+static int vehicle_identify_respon(doip_entity_t *doip_entity, char vin[17], uint8_t eid[6])
+{
+	if (vin && strncmp(vin, doip_entity->vin, 17) == 0) {
+		return __vehicle_identify_announce(doip_entity);
+	}
+	else if (eid && memcmp(eid, doip_entity->eid, sizeof(doip_entity->eid)) == 0) {
+		return __vehicle_identify_announce(doip_entity);
+	}
+	else {
+		return __vehicle_identify_announce(doip_entity);
+	}
+}
+
+static void tcp_read_cb(EV_P_ ev_io *w, int e)
+{
+
+}
+
+static void accept_cb(EV_P_ ev_io *w, int e)
+{
+	ev_io *iow;
+	socklen_t socklen;
+	struct sockaddr_in client;
+
+	socklen = sizeof(client);
+	int connfd = accept(w->fd, (struct sockaddr *)&client, &socklen);
+	if ((connfd < 0) && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+		/* no new connection */
+		return;
+	}
+
+	iow = malloc(sizeof(*iow)); 
+	if (iow) {
+		ev_io_init(iow, tcp_read_cb, connfd, EV_READ);
+		ev_io_start(loop, iow);
+	}
 }
 
 void doip_entity_set_userdata(doip_entity_t *doip_entity, void *userdata)
@@ -178,6 +360,266 @@ void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr
 		doip_entity->white_list = malloc(count * sizeof(uint16_t));
 		memcpy(doip_entity->white_list, addr, count);
 	}
+}
+
+void doip_entity_set_vin(doip_entity_t *doip_entity, const char *vin, int len)
+{
+	if (doip_entity) {
+		bzero(doip_entity->vin, sizeof(doip_entity->vin));
+		memcpy(doip_entity->vin, vin, MIN((int)sizeof(doip_entity->vin), len));
+	}
+}
+
+static int tcp_server_init(doip_entity_t *doip_entity)
+{
+	int fd;
+	struct sockaddr_in server;
+
+	if (!doip_entity) {
+		return -1;
+	}
+
+	if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		return -1;
+	}
+
+	int opt = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+	/* set nonblock */
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+
+	bzero((uint8_t *)&server, sizeof(server));
+	server.sin_family = AF_INET;
+	server.sin_port = htobe16(doip_entity->tcp_server.port);
+	inet_pton(AF_INET, doip_entity->tcp_server.addr, &server.sin_addr);
+
+	if (bind(fd, (struct sockaddr *)&server, sizeof(server)) < 0) {
+		goto finish;
+	}
+
+	if (listen(fd, 10) < 0) {
+		goto finish;
+	}
+
+	doip_entity->tcp_server.handler = fd;
+	doip_entity->tcp_server.status = INITIALIZED;
+
+	return fd;
+
+finish:
+	if (fd > 0) {
+		close(fd);
+		fd = 0;
+	}
+	return -1;
+}
+
+static int udp_server_init(doip_entity_t *doip_entity)
+{
+	int fd;
+	int broadcast = 1;
+	struct sockaddr_in server;
+
+	if (!doip_entity) {
+		return -1;
+	}
+
+	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+		return -1;
+	}
+
+	/* set nonblock */
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+
+	/* enable broadcast */
+	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, (uint8_t *)&broadcast, sizeof(broadcast));
+
+	bzero((uint8_t *)&server, sizeof(server));
+	server.sin_family = AF_INET;
+	server.sin_port = htobe16(doip_entity->udp_server.port);
+	inet_pton(AF_INET, doip_entity->udp_server.addr, &server.sin_addr);
+
+	if (bind(fd, (struct sockaddr *)&server, sizeof(server)) < 0) {
+		goto finish;
+	}
+
+	doip_entity->udp_server.handler = fd;
+	doip_entity->udp_server.status = INITIALIZED;
+
+	return fd;
+
+finish:
+	if (fd > 0) {
+		close(fd);
+		fd = 0;
+	}
+	return -1;
+}
+
+static void doip_assert(uint8_t expr, const char *comment)
+{
+	if (!expr) {
+		logd("%s\n", comment);
+		assert(expr);
+	}
+}
+
+static void tcp_server_start(struct ev_loop *loop, doip_entity_t *doip_entity)
+{
+	if (!doip_entity) {
+		return;
+	}
+
+	ev_io_init(doip_entity->tcp_server.watcher, accept_cb, doip_entity->tcp_server.handler, EV_READ);
+	ev_io_start(loop, doip_entity->tcp_server.watcher);
+}
+
+static void udp_read_cb(EV_P_ ev_io *w, int e)
+{
+	int errcode;
+	doip_entity_t *doip_entity = ev_userdata(loop);
+
+	ssize_t count = recv(w->fd, doip_entity->udp_server.doip_pdu.payload, doip_entity->udp_server.doip_pdu.payload_cap, 0);
+	if (count == 0) {
+		return;
+	}
+	if (count < 0) {
+		/* TODO: restart udp server */
+		return;
+	}
+
+	disassemble_doip_header(doip_entity->udp_server.doip_pdu.payload, count, &doip_entity->udp_server.doip_pdu);
+	if (udp_doip_header_verify(&doip_entity->udp_server.doip_pdu, &errcode) != 0) {
+		send_generic_header_nack(doip_entity, errcode);
+		return;
+	}
+
+	uint16_t payload_type = doip_entity->udp_server.doip_pdu.payload_type;
+
+	switch (payload_type) {
+		case Generic_Doip_Header_Negative_Ack:
+			return; /* ignore */
+		case Vehicle_Identify_Request_Message:
+			return;
+		case Vehicle_Identify_Request_Message_With_EID:
+			return;
+		case Vehicle_Identify_Request_Message_With_VIN:
+			return;
+		case Doip_Entity_Status_Request:
+			return;
+		case Diagnotic_Powermode_Information_Request:
+			return;
+		default:
+			logd("unknow\n");
+	}
+}
+
+static void vehicle_identify_announce_timer_callback(EV_P_ ev_timer *w, int e)
+{
+	static int count = 0;
+	doip_entity_t *doip_entity = ev_userdata(loop);
+
+	__vehicle_identify_announce(doip_entity);
+
+	if (++count >= doip_entity->announce_count) {
+		count = 0;
+		ev_timer_stop(loop, w);
+		free(w);
+	}
+}
+
+static void vehicle_identify_announce(doip_entity_t *doip_entity)
+{
+	ev_timer *vehicle_identify_announce_timer = calloc(1, sizeof(ev_timer));
+
+	ev_timer_init(vehicle_identify_announce_timer, vehicle_identify_announce_timer_callback, 0, doip_entity->announce_internal/1000);
+
+	ev_timer_start(doip_entity->loop, vehicle_identify_announce_timer);
+}
+
+static void udp_server_start(struct ev_loop *loop, doip_entity_t *doip_entity)
+{
+	ev_io_init(doip_entity->udp_server.watcher, udp_read_cb, doip_entity->udp_server.handler, EV_READ);
+	ev_io_start(loop, doip_entity->udp_server.watcher);
+
+	vehicle_identify_announce(doip_entity);
+}
+
+static void prepare_cb(EV_P_ ev_prepare *w, int e)
+{
+	doip_entity_t *doip_entity = (doip_entity_t *)ev_userdata(loop);
+
+	if (!doip_entity) {
+		return;
+	}
+
+	if (doip_entity->tcp_server.status == UNINITIALIZED) {
+		logd("tcp_server_init\n");
+		/* TODO clear all clients */
+		if (tcp_server_init(doip_entity) < 0) {
+			return;
+		}
+		tcp_server_start(loop, doip_entity);
+	}
+	if (doip_entity->udp_server.status == UNINITIALIZED) {
+		logd("udp_server_init\n");
+		if (udp_server_init(doip_entity) < 0) {
+			return;
+		}
+		udp_server_start(loop, doip_entity);
+	}
+}
+
+static void doip_entity_init(doip_entity_t *doip_entity)
+{
+	if (!doip_entity) {
+		return;
+	}
+
+	ev_prepare_init(doip_entity->prepare_w, prepare_cb);
+	ev_prepare_start(doip_entity->loop, doip_entity->prepare_w);
+}
+
+doip_entity_t *doip_entity_alloc()
+{
+	doip_entity_t *doip_entity = malloc(sizeof(*doip_entity));
+
+	if (!doip_entity) {
+		return NULL;
+	}
+
+	bzero(doip_entity, sizeof(*doip_entity));
+	doip_entity->loop = ev_default_loop(0);
+	doip_entity->prepare_w = malloc(sizeof(ev_prepare));
+	doip_entity->tcp_server.watcher = malloc(sizeof(ev_io));
+	doip_entity->udp_server.watcher = malloc(sizeof(ev_io));
+	doip_entity->udp_server.doip_pdu.payload_cap = MAX_DOIP_PDU_SIZE;
+	doip_entity->tcp_server.doip_pdu.payload_cap = MAX_DOIP_PDU_SIZE;
+	doip_entity->tcp_server.doip_pdu.payload = malloc(doip_entity->tcp_server.doip_pdu.payload_cap);
+	doip_entity->udp_server.doip_pdu.payload = malloc(doip_entity->tcp_server.doip_pdu.payload_cap);
+
+	doip_entity->tcp_server.doip_entity = doip_entity;
+	doip_entity->udp_server.doip_entity = doip_entity;
+
+	doip_assert(doip_entity->loop && \
+			doip_entity->prepare_w && \
+			doip_entity->tcp_server.watcher && \
+			doip_entity->udp_server.watcher && \
+			doip_entity->tcp_server.doip_pdu.payload && \
+			doip_entity->udp_server.doip_pdu.payload, "malloc failed");
+
+	doip_entity->initial_activity_time = T_TCP_Initial_Inactivity;
+	doip_entity->general_activity_time = T_TCP_General_Inactivity;
+	doip_entity->announce_count = A_DoIP_Announce_Num;
+	doip_entity->announce_internal = A_DoIP_Announce_Interval;
+	doip_entity->announce_wait_time = A_DoIP_Announce_Wait;
+
+	ev_set_userdata(doip_entity->loop, doip_entity);
+
+	doip_entity_init(doip_entity);
+
+	return doip_entity;
 }
 
 int doip_entity_start(doip_entity_t *doip_entity)
