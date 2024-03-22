@@ -17,6 +17,7 @@
 enum {
 	UNINITIALIZED,
 	INITIALIZED,
+	FINALIZATION,
 };
 
 typedef struct doip_pdu_t {
@@ -71,8 +72,110 @@ struct doip_entity {
 	doip_server_t tcp_server;
 	doip_server_t udp_server;
 	ev_prepare *prepare_w;
+	ev_check *check_w;
 	struct ev_loop *loop;
 };
+
+void doip_entity_set_userdata(doip_entity_t *doip_entity, void *userdata)
+{
+	if (doip_entity) {
+		doip_entity->userdata = userdata;
+	}
+}
+
+void *doip_entity_userdata(doip_entity_t *doip_entity)
+{
+	if (doip_entity) {
+		return doip_entity->userdata;
+	}
+	return NULL;
+}
+
+void doip_entity_set_initial_activity_time(doip_entity_t *doip_entity, int time)
+{
+	if (doip_entity) {
+		doip_entity->initial_activity_time = time;
+	}
+}
+
+void doip_entity_set_general_activity_time(doip_entity_t *doip_entity, int time)
+{
+	if (doip_entity) {
+		doip_entity->general_activity_time = time;
+	}
+}
+
+void doip_entity_set_announce_wait_time(doip_entity_t *doip_entity, int time)
+{
+	if (doip_entity) {
+		doip_entity->announce_wait_time = time;
+	}
+}
+
+void doip_entity_set_announce_count(doip_entity_t *doip_entity, int count)
+{
+	if (doip_entity) {
+		doip_entity->announce_count = count;
+	}
+}
+
+void doip_entity_set_announce_internal(doip_entity_t *doip_entity, int internal)
+{
+	if (doip_entity) {
+		doip_entity->announce_internal = internal;
+	}
+}
+
+void doip_entity_set_tcp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
+{
+	if (!(doip_entity && addr)) {
+		return;
+	}
+
+	doip_entity->tcp_server.port = port;
+	memcpy(doip_entity->tcp_server.addr, addr, sizeof(doip_entity->tcp_server.addr));
+}
+
+void doip_entity_set_udp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
+{
+	if (!(doip_entity && addr)) {
+		return;
+	}
+
+	doip_entity->udp_server.port = port;
+	memcpy(doip_entity->udp_server.addr, addr, sizeof(doip_entity->udp_server.addr));
+}
+
+void doip_entity_set_logic_addr(doip_entity_t *doip_entity, unsigned short addr)
+{
+	if (doip_entity) {
+		doip_entity->logic_addr = addr;
+	}
+}
+
+void doip_entity_set_func_addr(doip_entity_t *doip_entity, unsigned short addr)
+{
+	if (doip_entity) {
+		doip_entity->func_addr = addr;
+	}
+}
+
+void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr, int count)
+{
+	if (doip_entity) {
+		doip_entity->white_list_count = count;
+		doip_entity->white_list = malloc(count * sizeof(uint16_t));
+		memcpy(doip_entity->white_list, addr, count);
+	}
+}
+
+void doip_entity_set_vin(doip_entity_t *doip_entity, const char *vin, int len)
+{
+	if (doip_entity) {
+		bzero(doip_entity->vin, sizeof(doip_entity->vin));
+		memcpy(doip_entity->vin, vin, MIN((int)sizeof(doip_entity->vin), len));
+	}
+}
 
 static void update_doip_header_len(uint8_t *data, int len, uint32_t payload_len)
 {
@@ -160,11 +263,13 @@ static int udp_doip_header_verify(doip_pdu_t *doip_pdu, int *errcode)
 		return -1;
 	}
 
+	/* just for testing */
 	if (doip_pdu->data_len > MAX_DOIP_PDU_SIZE/2) {
 		*errcode = Header_NACK_Message_Too_Large;
 		return -1;
 	}
 
+	/* just for testing */
 	if (doip_pdu->data_len > MAX_DOIP_PDU_SIZE * 2/3) {
 		*errcode = Header_NACK_Out_Of_Memory;
 		return -1;
@@ -266,107 +371,6 @@ static void accept_cb(EV_P_ ev_io *w, int e)
 	if (iow) {
 		ev_io_init(iow, tcp_read_cb, connfd, EV_READ);
 		ev_io_start(loop, iow);
-	}
-}
-
-void doip_entity_set_userdata(doip_entity_t *doip_entity, void *userdata)
-{
-	if (doip_entity) {
-		doip_entity->userdata = userdata;
-	}
-}
-
-void *doip_entity_userdata(doip_entity_t *doip_entity)
-{
-	if (doip_entity) {
-		return doip_entity->userdata;
-	}
-	return NULL;
-}
-
-void doip_entity_set_initial_activity_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->initial_activity_time = time;
-	}
-}
-
-void doip_entity_set_general_activity_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->general_activity_time = time;
-	}
-}
-
-void doip_entity_set_announce_wait_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->announce_wait_time = time;
-	}
-}
-
-void doip_entity_set_announce_count(doip_entity_t *doip_entity, int count)
-{
-	if (doip_entity) {
-		doip_entity->announce_count = count;
-	}
-}
-
-void doip_entity_set_announce_internal(doip_entity_t *doip_entity, int internal)
-{
-	if (doip_entity) {
-		doip_entity->announce_internal = internal;
-	}
-}
-
-void doip_entity_set_tcp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
-{
-	if (!(doip_entity && addr)) {
-		return;
-	}
-
-	doip_entity->tcp_server.port = port;
-	memcpy(doip_entity->tcp_server.addr, addr, sizeof(doip_entity->tcp_server.addr));
-}
-
-void doip_entity_set_udp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
-{
-	if (!(doip_entity && addr)) {
-		return;
-	}
-
-	doip_entity->udp_server.port = port;
-	memcpy(doip_entity->udp_server.addr, addr, sizeof(doip_entity->udp_server.addr));
-}
-
-void doip_entity_set_logic_addr(doip_entity_t *doip_entity, unsigned short addr)
-{
-	if (doip_entity) {
-		doip_entity->logic_addr = addr;
-	}
-}
-
-void doip_entity_set_func_addr(doip_entity_t *doip_entity, unsigned short addr)
-{
-	if (doip_entity) {
-		doip_entity->func_addr = addr;
-	}
-}
-
-void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr, int count)
-{
-	if (doip_entity) {
-		doip_entity->white_list_count = count;
-		doip_entity->white_list = malloc(count * sizeof(uint16_t));
-		memcpy(doip_entity->white_list, addr, count);
-	}
-}
-
-void doip_entity_set_vin(doip_entity_t *doip_entity, const char *vin, int len)
-{
-	if (doip_entity) {
-		bzero(doip_entity->vin, sizeof(doip_entity->vin));
-		memcpy(doip_entity->vin, vin, MIN((int)sizeof(doip_entity->vin), len));
 	}
 }
 
@@ -550,10 +554,6 @@ static void prepare_cb(EV_P_ ev_prepare *w, int e)
 {
 	doip_entity_t *doip_entity = (doip_entity_t *)ev_userdata(loop);
 
-	if (!doip_entity) {
-		return;
-	}
-
 	if (doip_entity->tcp_server.status == UNINITIALIZED) {
 		logd("tcp_server_init\n");
 		/* TODO clear all clients */
@@ -571,6 +571,60 @@ static void prepare_cb(EV_P_ ev_prepare *w, int e)
 	}
 }
 
+static void doip_client_clean(doip_client_t *doip_client)
+{
+	doip_entity_t *doip_entity = doip_client->doip_entity;
+	struct ev_loop *loop = doip_entity->loop;
+
+	ev_io_stop(loop, doip_client->watcher);
+	ev_timer_stop(loop, doip_client->initial_activity_timer);
+	ev_timer_stop(loop, doip_client->general_activity_timer);
+	close(doip_client->watcher->fd);
+}
+
+static void doip_tcp_server_clean(doip_server_t *tcp_server)
+{
+	doip_client_t *client, *temp;
+
+	if (tcp_server->client_nums == 0) {
+		return;
+	}
+	list_for_each_entry_safe(client, temp, &tcp_server->head, list) {
+
+	}
+}
+
+static void doip_udp_server_clean(doip_server_t *udp_server)
+{
+	/* do nothing */
+}
+
+/* 集中处理需要关闭的客户端,重启服务器本身(服务器出问题的话) */
+static void check_cb(EV_P_ ev_check *w, int e)
+{
+	doip_client_t *client, *temp;
+	doip_entity_t *doip_entity = ev_userdata(loop);
+	doip_server_t *tcp_server = &doip_entity->tcp_server;
+	doip_server_t *udp_server = &doip_entity->udp_server;
+
+	if (tcp_server->status == FINALIZATION) {
+
+	}
+	if (udp_server->status == FINALIZATION) {
+
+	}
+
+	if (tcp_server->client_nums == 0) {
+		return;
+	}
+
+	list_for_each_entry_safe(client, temp, &tcp_server->head, list) {
+		if (client->status == FINALIZATION) {
+			list_del(&client->list);
+		}
+	}
+}
+
 static void doip_entity_init(doip_entity_t *doip_entity)
 {
 	if (!doip_entity) {
@@ -579,6 +633,9 @@ static void doip_entity_init(doip_entity_t *doip_entity)
 
 	ev_prepare_init(doip_entity->prepare_w, prepare_cb);
 	ev_prepare_start(doip_entity->loop, doip_entity->prepare_w);
+
+	ev_check_init(doip_entity->check_w, check_cb);
+	ev_check_start(doip_entity->loop, doip_entity->check_w);
 }
 
 doip_entity_t *doip_entity_alloc()
@@ -592,6 +649,7 @@ doip_entity_t *doip_entity_alloc()
 	bzero(doip_entity, sizeof(*doip_entity));
 	doip_entity->loop = ev_default_loop(0);
 	doip_entity->prepare_w = malloc(sizeof(ev_prepare));
+	doip_entity->check_w = malloc(sizeof(ev_check));
 	doip_entity->tcp_server.watcher = malloc(sizeof(ev_io));
 	doip_entity->udp_server.watcher = malloc(sizeof(ev_io));
 	doip_entity->udp_server.doip_pdu.payload_cap = MAX_DOIP_PDU_SIZE;
@@ -604,6 +662,7 @@ doip_entity_t *doip_entity_alloc()
 
 	doip_assert(doip_entity->loop && \
 			doip_entity->prepare_w && \
+			doip_entity->check_w && \
 			doip_entity->tcp_server.watcher && \
 			doip_entity->udp_server.watcher && \
 			doip_entity->tcp_server.doip_pdu.payload && \
