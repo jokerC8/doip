@@ -51,6 +51,7 @@ typedef struct doip_server {
 	uint16_t client_nums;
 #define MAX_DOIP_PDU_SIZE  (0x10000)
 	doip_pdu_t doip_pdu;
+	struct sockaddr_in broadcast; /* for udp server */
 	struct list_head head;
 	doip_entity_t *doip_entity;
 } doip_server_t;
@@ -315,7 +316,7 @@ static int __vehicle_identify_announce(doip_entity_t *doip_entity)
 {
 	STREAM_T strm;
 	uint8_t buffer[64] = {0};
-	struct sockaddr_in target;
+	doip_server_t *udp_server = &doip_entity->udp_server;
 
 	YX_InitStrm(&strm, buffer, sizeof(buffer));
 	YX_MovStrmPtr(&strm, assemble_doip_header(YX_GetStrmPtr(&strm), YX_GetStrmLeftLen(&strm), Vehicle_Announcememt_Message, 0));
@@ -328,25 +329,61 @@ static int __vehicle_identify_announce(doip_entity_t *doip_entity)
 
 	update_doip_header_len(YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), YX_GetStrmLen(&strm) - 8);
 
-	bzero(&target, sizeof(target));
-	target.sin_family = AF_INET;
-	target.sin_port = htobe16(UDP_DISCOVERY);
-	inet_pton(AF_INET, "255.255.255.255", &target.sin_addr);
-
-	return sendto(doip_entity->udp_server.handler, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), 0, (struct sockaddr *)&target, sizeof(target));
+	return sendto(udp_server->handler, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), 0, (struct sockaddr *)&udp_server->broadcast, sizeof(udp_server->broadcast));
 }
 
-static int vehicle_identify_respon(doip_entity_t *doip_entity, char vin[17], uint8_t eid[6])
+static int vehicle_identify_respon(doip_entity_t *doip_entity)
 {
-	if (vin && strncmp(vin, doip_entity->vin, 17) == 0) {
+	return __vehicle_identify_announce(doip_entity);
+}
+
+static int vehicle_identify_respon_with_eid(doip_entity_t *doip_entity)
+{
+	if (memcpy(doip_entity->eid, &doip_entity->udp_server.doip_pdu.payload[8], 6) == 0) {
 		return __vehicle_identify_announce(doip_entity);
 	}
-	else if (eid && memcmp(eid, doip_entity->eid, sizeof(doip_entity->eid)) == 0) {
+
+	return 0;
+}
+
+static int vehicle_identify_respon_with_vin(doip_entity_t *doip_entity)
+{
+	if (memcpy(doip_entity->vin, &doip_entity->udp_server.doip_pdu.payload[17], 17) == 0) {
 		return __vehicle_identify_announce(doip_entity);
 	}
-	else {
-		return __vehicle_identify_announce(doip_entity);
-	}
+
+	return 0;
+}
+
+static int doip_entity_status_respon(doip_entity_t *doip_entity)
+{
+	STREAM_T strm;
+	uint8_t buffer[16] = {0};
+
+	YX_InitStrm(&strm, buffer, sizeof(buffer));
+	YX_MovStrmPtr(&strm, assemble_doip_header(YX_GetStrmStartPtr(&strm), YX_GetStrmLeftLen(&strm), Doip_Entity_Status_Response, 0));
+	YX_WriteBYTE_Strm(&strm, 0x01);
+	YX_WriteBYTE_Strm(&strm, 2);
+	YX_WriteBYTE_Strm(&strm, doip_entity->tcp_server.client_nums);
+	YX_WriteLONG_Strm(&strm, doip_entity->tcp_server.doip_pdu.payload_cap);
+
+	update_doip_header_len(YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), YX_GetStrmLen(&strm) - 8);
+
+	return udp_server_send(doip_entity, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm));
+}
+
+static int diagnostic_powermode_information_respon(doip_entity_t *doip_entity)
+{
+	STREAM_T strm;
+	uint8_t buffer[16] = {0};
+
+	YX_InitStrm(&strm, buffer, sizeof(buffer));
+	YX_MovStrmPtr(&strm, assemble_doip_header(YX_GetStrmStartPtr(&strm), YX_GetStrmLeftLen(&strm), Diagnotic_Powermode_Information_Response, 0));
+	YX_WriteBYTE_Strm(&strm, 0x01);
+
+	update_doip_header_len(YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm), YX_GetStrmLen(&strm) - 8);
+
+	return udp_server_send(doip_entity, YX_GetStrmStartPtr(&strm), YX_GetStrmLen(&strm));
 }
 
 static void tcp_read_cb(EV_P_ ev_io *w, int e)
@@ -451,6 +488,12 @@ static int udp_server_init(doip_entity_t *doip_entity)
 	doip_entity->udp_server.handler = fd;
 	doip_entity->udp_server.status = INITIALIZED;
 
+	/* init broadcast target */
+	bzero(&doip_entity->udp_server.broadcast, sizeof(doip_entity->udp_server.broadcast));
+	doip_entity->udp_server.broadcast.sin_family = AF_INET;
+	doip_entity->udp_server.broadcast.sin_port = UDP_DISCOVERY;
+	inet_pton(AF_INET, "225.225.225.225", &doip_entity->udp_server.broadcast.sin_addr);
+
 	return fd;
 
 finish:
@@ -501,18 +544,25 @@ static void udp_read_cb(EV_P_ ev_io *w, int e)
 
 	uint16_t payload_type = doip_entity->udp_server.doip_pdu.payload_type;
 
+	logd("payload_type:0x%x\n", payload_type);
+
 	switch (payload_type) {
 		case Generic_Doip_Header_Negative_Ack:
 			return; /* ignore */
 		case Vehicle_Identify_Request_Message:
+			vehicle_identify_respon(doip_entity);
 			return;
 		case Vehicle_Identify_Request_Message_With_EID:
+			vehicle_identify_respon_with_eid(doip_entity);
 			return;
 		case Vehicle_Identify_Request_Message_With_VIN:
+			vehicle_identify_respon_with_vin(doip_entity);
 			return;
 		case Doip_Entity_Status_Request:
+			doip_entity_status_respon(doip_entity);
 			return;
 		case Diagnotic_Powermode_Information_Request:
+			diagnostic_powermode_information_respon(doip_entity);
 			return;
 		default:
 			logd("unknow\n");
