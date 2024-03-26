@@ -2,6 +2,7 @@ target := doip_server
 
 src := doip_entity.c \
 	   doip_stream.c \
+	   doip_utils.c  \
 	   doip_main.c
 
 obj := $(patsubst %.c, %.o, $(src))
