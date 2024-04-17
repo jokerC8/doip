@@ -20,27 +20,27 @@ uint32_t doip_stream_len(doip_stream_t *doip_stream);
 
 uint32_t doip_stream_cap(doip_stream_t *doip_stream);
 
-uint8_t *doip_stream_current_ptr(doip_stream_t *doip_stream);
+uint8_t *doip_stream_ptr(doip_stream_t *doip_stream);
 
 uint8_t *doip_stream_start_ptr(doip_stream_t *doip_stream);
 
-uint32_t doip_stream_move_forward(doip_stream_t *doip_stream, uint32_t step);
+uint32_t doip_stream_forward(doip_stream_t *doip_stream, uint32_t step);
 
-uint32_t doip_stream_move_backward(doip_stream_t *doip_stream, uint32_t step);
+uint32_t doip_stream_backward(doip_stream_t *doip_stream, uint32_t step);
 
 uint32_t doip_stream_write_byte(doip_stream_t *doip_stream, uint8_t val);
 
-uint32_t doip_stream_write_hword(doip_stream_t *doip_stream, uint16_t val);
+uint32_t doip_stream_write_be16(doip_stream_t *doip_stream, uint16_t val);
 
-uint32_t doip_stream_write_word(doip_stream_t *doip_stream, uint32_t val);
+uint32_t doip_stream_write_be32(doip_stream_t *doip_stream, uint32_t val);
 
-uint32_t doip_stream_write_double_word(doip_stream_t *doip_stream, uint64_t val);
+uint32_t doip_stream_write_be64(doip_stream_t *doip_stream, uint64_t val);
 
-uint32_t doip_stream_write_le_hword(doip_stream_t *doip_stream, uint16_t val);
+uint32_t doip_stream_write_le16(doip_stream_t *doip_stream, uint16_t val);
 
-uint32_t doip_stream_write_le_word(doip_stream_t *doip_stream, uint32_t val);
+uint32_t doip_stream_write_le32(doip_stream_t *doip_stream, uint32_t val);
 
-uint32_t doip_stream_write_le_double_word(doip_stream_t *doip_stream, uint64_t val);
+uint32_t doip_stream_write_le64(doip_stream_t *doip_stream, uint64_t val);
 
 uint32_t doip_stream_write_data(doip_stream_t *doip_stream, uint8_t *data, uint32_t len);
 
@@ -48,17 +48,17 @@ uint32_t doip_stream_write_string(doip_stream_t *doip_stream, const char *str);
 
 uint8_t doip_stream_read_byte(doip_stream_t *doip_stream);
 
-uint16_t doip_stream_read_hword(doip_stream_t *doip_stream);
+uint16_t doip_stream_read_be16(doip_stream_t *doip_stream);
 
-uint32_t doip_stream_read_word(doip_stream_t *doip_stream);
+uint32_t doip_stream_read_be32(doip_stream_t *doip_stream);
 
-uint64_t doip_stream_read_double_word(doip_stream_t *doip_stream);
+uint64_t doip_stream_read_be64(doip_stream_t *doip_stream);
 
-uint16_t doip_stream_read_le_hword(doip_stream_t *doip_stream);
+uint16_t doip_stream_read_le16(doip_stream_t *doip_stream);
 
-uint32_t doip_stream_read_le_word(doip_stream_t *doip_stream);
+uint32_t doip_stream_read_le32(doip_stream_t *doip_stream);
 
-uint64_t doip_stream_read_le_double_word(doip_stream_t *doip_stream);
+uint64_t doip_stream_read_le64(doip_stream_t *doip_stream);
 
 uint32_t doip_stream_read_data(doip_stream_t *doip_stream, uint8_t *buffer, uint32_t len);
 

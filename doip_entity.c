@@ -277,8 +277,8 @@ static void update_doip_header_len(uint8_t *data, int len, uint32_t payload_len)
 
 	if (len > 8) {
 		doip_stream_init(&strm, data, len);
-		doip_stream_move_forward(&strm, 4);
-		doip_stream_write_word(&strm, payload_len);
+		doip_stream_forward(&strm, 4);
+		doip_stream_write_be32(&strm, payload_len);
 	}
 }
 
@@ -289,8 +289,8 @@ static int assemble_doip_header(uint8_t *data, int len, uint16_t payload_type, u
 	doip_stream_init(&strm, data, len);
 	doip_stream_write_byte(&strm, 0x02);
 	doip_stream_write_byte(&strm, 0xfd);
-	doip_stream_write_hword(&strm, payload_type);
-	doip_stream_write_word(&strm, payload_len);
+	doip_stream_write_be16(&strm, payload_type);
+	doip_stream_write_be32(&strm, payload_len);
 	return doip_stream_len(&strm);
 }
 
@@ -327,7 +327,7 @@ static ssize_t tcp_send_generic_header_nack(doip_client_t *doip_client, int nack
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Generic_Doip_Header_Negative_Ack, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Generic_Doip_Header_Negative_Ack, 0));
 	doip_stream_write_byte(&strm, nack);
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -340,7 +340,7 @@ static ssize_t udp_send_generic_header_nack(doip_entity_t *doip_entity, int nack
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Generic_Doip_Header_Negative_Ack, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Generic_Doip_Header_Negative_Ack, 0));
 	doip_stream_write_byte(&strm, nack);
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -400,9 +400,9 @@ static int tcp_doip_header_verify(doip_pdu_t *doip_pdu, int *errcode)
 	 * specific payload type. This includes payload-type-specific minimum length, fixed length and
 	 * maximum length checks.
      */
-	if (!((doip_pdu->payload_type == Routing_Activation_Request && doip_pdu->data_len == 0x11) || \
-		(doip_pdu->payload_type == Alive_Check_Request && doip_pdu->data_len == 8) || \
-		(doip_pdu->payload_type == Diagnostic_Message && (doip_pdu->data_len > 8 && doip_pdu->data_len < MAX_DOIP_PDU_SIZE)))) {
+	if (!((doip_pdu->payload_type == Routing_Activation_Request && doip_pdu->payload_len == 0x0b && doip_pdu->data_len >= 0x13) || \
+		(doip_pdu->payload_type == Alive_Check_Request && doip_pdu->payload_len == 0x00 && doip_pdu->data_len >= 0x08) || \
+		(doip_pdu->payload_type == Diagnostic_Message && doip_pdu->payload_len > 0 && doip_pdu->data_len > 0x0d && doip_pdu->data_len < MAX_DOIP_PDU_SIZE))) {
 		*errcode = Header_NACK_Invalid_Payload_Len;
 		goto finish;
 	}
@@ -500,11 +500,11 @@ static int disassemble_doip_header(uint8_t *data, uint32_t len, doip_pdu_t *doip
 	doip_stream_init(&strm, data, len);
 	doip_pdu->protocol = doip_stream_read_byte(&strm);
 	doip_pdu->inverse = doip_stream_read_byte(&strm);
-	doip_pdu->payload_type = doip_stream_read_hword(&strm);
-	doip_pdu->payload_len = doip_stream_read_word(&strm);
+	doip_pdu->payload_type = doip_stream_read_be16(&strm);
+	doip_pdu->payload_len = doip_stream_read_be32(&strm);
 	doip_pdu->data_len = len;
 
-#if 1
+#if 0
 	logd("protocol:0x%02x\n", doip_pdu->protocol);
 	logd("inverse:0x%02x\n", doip_pdu->inverse);
 	logd("payload_type:0x%04x\n", doip_pdu->payload_type);
@@ -525,9 +525,9 @@ static int vehicle_identify_announce(doip_entity_t *doip_entity)
 	}
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
 	doip_stream_write_data(&strm, (uint8_t *)doip_entity->vin, 17);
-	doip_stream_write_hword(&strm, doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_entity->sa);
 	doip_stream_write_data(&strm, doip_entity->eid, sizeof(doip_entity->eid));
 	doip_stream_write_data(&strm, doip_entity->gid, sizeof(doip_entity->gid));
 	doip_stream_write_byte(&strm, 0x00);
@@ -545,9 +545,9 @@ static int vehicle_identify_respon(doip_entity_t *doip_entity)
 	doip_server_t *udp_server = &doip_entity->udp_server;
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
 	doip_stream_write_data(&strm, (uint8_t *)doip_entity->vin, 17);
-	doip_stream_write_hword(&strm, doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_entity->sa);
 	doip_stream_write_data(&strm, doip_entity->eid, sizeof(doip_entity->eid));
 	doip_stream_write_data(&strm, doip_entity->gid, sizeof(doip_entity->gid));
 	doip_stream_write_byte(&strm, 0x00);
@@ -593,11 +593,11 @@ static int doip_entity_status_respon(doip_entity_t *doip_entity)
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Doip_Entity_Status_Response, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Doip_Entity_Status_Response, 0));
 	doip_stream_write_byte(&strm, 0x01);
 	doip_stream_write_byte(&strm, 2);
 	doip_stream_write_byte(&strm, doip_entity->tcp_server.client_nums);
-	doip_stream_write_word(&strm, MAX_DOIP_PDU_SIZE);
+	doip_stream_write_be32(&strm, MAX_DOIP_PDU_SIZE);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -631,7 +631,7 @@ static int diagnostic_powermode_information_respon(doip_entity_t *doip_entity)
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnotic_Powermode_Information_Response, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnotic_Powermode_Information_Response, 0));
 	doip_stream_write_byte(&strm, 0x01);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
@@ -645,12 +645,12 @@ static ssize_t send_routing_activation_negative_respon(doip_client_t *doip_clien
 	uint8_t buffer[32] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
-	doip_stream_write_hword(&strm, doip_client->ta);
-	doip_stream_write_hword(&strm, doip_client->doip_entity->sa);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
+	doip_stream_write_be16(&strm, doip_client->ta);
+	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
 	doip_stream_write_byte(&strm, errcode);
-	doip_stream_write_word(&strm, 0xffffffff);
-	doip_stream_write_word(&strm, 0xffffffff);
+	doip_stream_write_be32(&strm, 0xffffffff);
+	doip_stream_write_be32(&strm, 0xffffffff);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -701,7 +701,7 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 	uint8_t buffer[32] = {0};
 
 	doip_stream_init(&strm, doip_pdu->payload + 8, doip_pdu->payload_len);
-	logic_addr = doip_stream_read_hword(&strm);
+	logic_addr = doip_stream_read_be16(&strm);
 	active_type = doip_stream_read_byte(&strm);
 
 	/* [DoIP-059]
@@ -775,12 +775,12 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 
 	/* routing activation response */
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
-	doip_stream_write_hword(&strm, doip_client->ta);
-	doip_stream_write_hword(&strm, doip_entity->sa);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
+	doip_stream_write_be16(&strm, doip_client->ta);
+	doip_stream_write_be16(&strm, doip_entity->sa);
 	doip_stream_write_byte(&strm, Routine_Activation_Success);
-	doip_stream_write_word(&strm, 0xffffffff);
-	doip_stream_write_word(&strm, 0xffffffff);
+	doip_stream_write_be32(&strm, 0xffffffff);
+	doip_stream_write_be32(&strm, 0xffffffff);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -799,17 +799,33 @@ static void alive_check_request_handler(doip_client_t *doip_client)
 	doip_stream_t strm;
 	uint8_t buffer[16];
 
+	/* [DoIP-134]
+	 * The DoIP alive check message shall only be sent on connections that are currently in one of
+	 * the “Registered” connection states.
+	 */
 	if (doip_client->status != DoIP_Connection_RoutingActivated) {
 		return;
 	}
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Alive_Check_Response, 0));
-	doip_stream_write_hword(&strm, doip_client->ta);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Alive_Check_Response, 0));
+	doip_stream_write_be16(&strm, doip_client->ta);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
 	doip_entity_tcp_send(doip_client, doip_stream_start_ptr(&strm), doip_stream_len(&strm));
+}
+
+static void alive_check_response_handler(doip_client_t *doip_client)
+{
+	/* [DoIP-078]
+	 * Each DoIP entity shall receive and process alive check response messages according to the
+	 * requirements in 7.2.4
+	 * NOTE:
+	 * The alive check response message can also be used by the external test equipment to keep a currently idle
+	 * connection alive, i.e. it can be sent by the external test equipment even if it has not previously received an alive check
+	 * request from a DoIP entity.
+	 */
 }
 
 static bool is_sa_registered(doip_client_t *doip_client, uint16_t sa)
@@ -858,9 +874,9 @@ static size_t send_diagnostic_positive_acknowledge_code(doip_client_t *doip_clie
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Positive_ACK, 0));
-	doip_stream_write_hword(&strm, doip_client->doip_entity->sa);
-	doip_stream_write_hword(&strm, doip_client->ta);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Positive_ACK, 0));
+	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_client->ta);
 	doip_stream_write_byte(&strm, 0x00);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
@@ -874,10 +890,11 @@ static size_t send_diagnostic_negative_acknowledge_code(doip_client_t *doip_clie
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_move_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Negative_ACK, 0));
-	doip_stream_write_hword(&strm, doip_client->doip_entity->sa);
-	doip_stream_write_hword(&strm, doip_client->ta);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Negative_ACK, 0));
+	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_client->ta);
 	doip_stream_write_byte(&strm, errcode);
+	doip_stream_write_data(&strm, doip_client->doip_pdu.payload + 12, doip_client->doip_pdu.data_len - 12);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
 
@@ -914,9 +931,18 @@ static void disgnostic_message_handler(doip_client_t *doip_client)
 	doip_pdu_t *doip_pdu = &doip_client->doip_pdu;
 
 	doip_stream_init(&strm, doip_pdu->payload, doip_pdu->data_len);
-	doip_stream_move_forward(&strm, 8);
-	sa = doip_stream_read_hword(&strm);
-	ta = doip_stream_read_hword(&strm);
+	doip_stream_forward(&strm, 8);
+	sa = doip_stream_read_be16(&strm);
+	ta = doip_stream_read_be16(&strm);
+
+	/* [DoIP-131]
+	 * Incoming DoIP messages, except the DoIP routing activation message or messages required
+	 * for authentication or confirmation, shall not be processed nor be routed before the connection
+	 * is in the state “Registered [Routing Active]”.
+	 */
+	if (doip_client->status != DoIP_Connection_RoutingActivated) {
+		return;
+	}
 
 	/* [DoIP-070]
 	 * Each DoIP entity shall send the diagnostic message negative acknowledgement with NACK
@@ -1056,11 +1082,12 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	if (!tcp_doip_header_verify(doip_pdu, &errcode)) {
 		tcp_send_generic_header_nack(doip_client, errcode);
 		logd("%s\n", header_verify_fail_reason(errcode));
-		if (errcode == Header_NACK_Incorrect_Pattern_Format) {
+		/* according to DoIP generic header handler [DoIP-045] */
+		if (errcode == Header_NACK_Incorrect_Pattern_Format || errcode == Header_NACK_Invalid_Payload_Len) {
 			doip_client->status = DoIP_Connection_Finalization;
 			goto finish_2;
 		}
-		/* Read and discard payload length bytes */
+		/* according to DoIP generic header handler [DoIP-087] */
 		else if (errcode == Header_NACK_Unknow_Payload_type || \
 				errcode == Header_NACK_Message_Too_Large || \
 				errcode == Header_NACK_Out_Of_Memory) {
@@ -1097,6 +1124,9 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 			break;
 		case Alive_Check_Request:
 			alive_check_request_handler(doip_client);
+			break;
+		case Alive_Check_Response:
+			alive_check_response_handler(doip_client);
 			break;
 		case Diagnostic_Message:
 			disgnostic_message_handler(doip_client);
@@ -1268,6 +1298,19 @@ finish:
 	return tcp_server->handler;
 }
 
+static void vehicle_identify_announce_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
+{
+	static int count = 0;
+	doip_entity_t *doip_entity = ev_userdata(loop);
+
+	vehicle_identify_announce(doip_entity);
+
+	if (++count >= doip_entity->announce_count) {
+		count = 0;
+		ev_timer_stop(loop, w);
+	}
+}
+
 static int udp_server_init(doip_entity_t *doip_entity)
 {
 	int broadcast = 1;
@@ -1363,7 +1406,9 @@ static void udp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	logd("payload_type:0x%04x (%s)\n", payload_type, show_message_info(payload_type));
 
 	switch (payload_type) {
+		/* according to DoIP generic header handler */
 		case Generic_Doip_Header_Negative_Ack:
+		case Vehicle_Announcememt_Message:
 			/* Ignore */
 			break;
 		case Vehicle_Identify_Request_Message:
@@ -1389,36 +1434,15 @@ finish:
 	return;
 }
 
-static void vehicle_identify_announce_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
-{
-	static int count = 0;
-	doip_entity_t *doip_entity = ev_userdata(loop);
-
-	vehicle_identify_announce(doip_entity);
-
-	if (++count >= doip_entity->announce_count) {
-		count = 0;
-		ev_timer_stop(loop, w);
-		doip_free(w);
-	}
-}
-
-static void start_vehicle_identify_announce_timer(doip_entity_t *doip_entity)
-{
-	ev_timer *vehicle_identify_announce_timer = doip_malloc(sizeof(ev_timer));
-
-	ev_timer_init(vehicle_identify_announce_timer, vehicle_identify_announce_timer_callback, doip_entity->announce_internal/1000, doip_entity->announce_internal/1000);
-
-	ev_timer_start(doip_entity->loop, vehicle_identify_announce_timer);
-}
-
 static void udp_server_start(struct ev_loop *loop, doip_entity_t *doip_entity)
 {
 	ev_io_init(&doip_entity->udp_server.watcher, udp_read_cb, doip_entity->udp_server.handler, EV_READ);
 
 	ev_io_start(loop, &doip_entity->udp_server.watcher);
 
-	start_vehicle_identify_announce_timer(doip_entity);
+	ev_timer_init(&doip_entity->udp_server.vehicle_identify_announce_timer, vehicle_identify_announce_timer_callback, doip_entity->announce_internal/1e3, doip_entity->announce_internal/1e3);
+
+	ev_timer_start(loop, &doip_entity->udp_server.vehicle_identify_announce_timer);
 }
 
 /* cleanup one tcp client */
@@ -1567,7 +1591,7 @@ static void doip_entity_init(doip_entity_t *doip_entity)
 	ev_prepare_init(&doip_entity->prepare_w, prepare_cb);
 	ev_prepare_start(doip_entity->loop, &doip_entity->prepare_w);
 
-	ev_timer_init(&doip_entity->heartbeat_w, heartbeat_cb, 0., 3.);
+	ev_timer_init(&doip_entity->heartbeat_w, heartbeat_cb, 3., 3.);
 	ev_timer_start(doip_entity->loop, &doip_entity->heartbeat_w);
 }
 

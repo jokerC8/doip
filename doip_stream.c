@@ -27,7 +27,7 @@ unsigned int doip_stream_cap(doip_stream_t *doip_stream)
 	return doip_stream->cap;
 }
 
-unsigned char *doip_stream_current_ptr(doip_stream_t *doip_stream)
+unsigned char *doip_stream_ptr(doip_stream_t *doip_stream)
 {
 	return doip_stream->curr;
 }
@@ -37,7 +37,7 @@ uint8_t *doip_stream_start_ptr(doip_stream_t *doip_stream)
 	return doip_stream->start;
 }
 
-uint32_t doip_stream_move_forward(doip_stream_t *doip_stream, uint32_t step)
+uint32_t doip_stream_forward(doip_stream_t *doip_stream, uint32_t step)
 {
 	uint32_t offset = (doip_stream->cap - doip_stream->len >= step) ? step : doip_stream->cap - doip_stream->len;
 
@@ -67,7 +67,7 @@ uint32_t doip_stream_write_byte(doip_stream_t *doip_stream, uint8_t val)
 	return 0;
 }
 
-uint32_t doip_stream_write_hword(doip_stream_t *doip_stream, uint16_t val)
+uint32_t doip_stream_write_be16(doip_stream_t *doip_stream, uint16_t val)
 {
 	uint32_t cnt = 0;
 
@@ -76,25 +76,25 @@ uint32_t doip_stream_write_hword(doip_stream_t *doip_stream, uint16_t val)
 	return cnt;
 }
 
-uint32_t doip_stream_write_word(doip_stream_t *doip_stream, uint32_t val)
+uint32_t doip_stream_write_be32(doip_stream_t *doip_stream, uint32_t val)
 {
 	uint32_t cnt = 0;
 
-	cnt += doip_stream_write_hword(doip_stream, (uint16_t)(val >> 16));
-	cnt += doip_stream_write_hword(doip_stream, (uint16_t)val);
+	cnt += doip_stream_write_be16(doip_stream, (uint16_t)(val >> 16));
+	cnt += doip_stream_write_be16(doip_stream, (uint16_t)val);
 	return cnt;
 }
 
-uint32_t doip_stream_write_double_word(doip_stream_t *doip_stream, uint64_t val)
+uint32_t doip_stream_write_be64(doip_stream_t *doip_stream, uint64_t val)
 {
 	uint32_t cnt = 0;
 
-	cnt += doip_stream_write_word(doip_stream, (uint32_t)(val >> 32));
-	cnt += doip_stream_write_word(doip_stream, (uint32_t)val);
+	cnt += doip_stream_write_be32(doip_stream, (uint32_t)(val >> 32));
+	cnt += doip_stream_write_be32(doip_stream, (uint32_t)val);
 	return cnt;
 }
 
-uint32_t doip_stream_write_le_hword(doip_stream_t *doip_stream, uint16_t val)
+uint32_t doip_stream_write_le16(doip_stream_t *doip_stream, uint16_t val)
 {
 	uint32_t cnt = 0;
 
@@ -103,21 +103,21 @@ uint32_t doip_stream_write_le_hword(doip_stream_t *doip_stream, uint16_t val)
 	return cnt;
 }
 
-uint32_t doip_stream_write_le_word(doip_stream_t *doip_stream, uint32_t val)
+uint32_t doip_stream_write_le32(doip_stream_t *doip_stream, uint32_t val)
 {
 	uint32_t cnt = 0;
 
-	cnt += doip_stream_write_le_hword(doip_stream, (uint16_t)(val));
-	cnt += doip_stream_write_le_hword(doip_stream, (uint16_t)(val >> 16));
+	cnt += doip_stream_write_le16(doip_stream, (uint16_t)(val));
+	cnt += doip_stream_write_le16(doip_stream, (uint16_t)(val >> 16));
 	return cnt;
 }
 
-uint32_t doip_stream_write_le_double_word(doip_stream_t *doip_stream, uint64_t val)
+uint32_t doip_stream_write_le64(doip_stream_t *doip_stream, uint64_t val)
 {
 	uint32_t cnt = 0;
 
-	cnt += doip_stream_write_le_word(doip_stream, (uint32_t)(val));
-	cnt += doip_stream_write_le_word(doip_stream, (uint32_t)(val >> 32));
+	cnt += doip_stream_write_le32(doip_stream, (uint32_t)(val));
+	cnt += doip_stream_write_le32(doip_stream, (uint32_t)(val >> 32));
 	return cnt;
 }
 
@@ -152,7 +152,7 @@ uint8_t doip_stream_read_byte(doip_stream_t *doip_stream)
 	return val;
 }
 
-uint16_t doip_stream_read_hword(doip_stream_t *doip_stream)
+uint16_t doip_stream_read_be16(doip_stream_t *doip_stream)
 {
 	uint16_t val = 0;
 
@@ -164,31 +164,31 @@ uint16_t doip_stream_read_hword(doip_stream_t *doip_stream)
 	return val;
 }
 
-uint32_t doip_stream_read_word(doip_stream_t *doip_stream)
+uint32_t doip_stream_read_be32(doip_stream_t *doip_stream)
 {
 	uint32_t val = 0;
 
 	if (doip_stream->cap - doip_stream->len >= 4) {
-		uint32_t hi = doip_stream_read_hword(doip_stream);
-		uint32_t lo = doip_stream_read_hword(doip_stream);
+		uint32_t hi = doip_stream_read_be16(doip_stream);
+		uint32_t lo = doip_stream_read_be16(doip_stream);
 		val = hi << 16 | lo;
 	}
 	return val;
 }
 
-uint64_t doip_stream_read_double_word(doip_stream_t *doip_stream)
+uint64_t doip_stream_read_be64(doip_stream_t *doip_stream)
 {
 	uint64_t val = 0;
 
 	if (doip_stream->cap - doip_stream->len >= 1) {
-		uint64_t hi = doip_stream_read_word(doip_stream);
-		uint64_t lo = doip_stream_read_word(doip_stream);
+		uint64_t hi = doip_stream_read_be32(doip_stream);
+		uint64_t lo = doip_stream_read_be32(doip_stream);
 		val = hi << 32 | lo;
 	}
 	return val;
 }
 
-uint16_t doip_stream_read_le_hword(doip_stream_t *doip_stream)
+uint16_t doip_stream_read_le16(doip_stream_t *doip_stream)
 {
 	uint16_t val = 0;
 
@@ -200,25 +200,25 @@ uint16_t doip_stream_read_le_hword(doip_stream_t *doip_stream)
 	return val;
 }
 
-uint32_t doip_stream_read_le_word(doip_stream_t *doip_stream)
+uint32_t doip_stream_read_le32(doip_stream_t *doip_stream)
 {
 	uint32_t val = 0;
 
 	if (doip_stream->cap - doip_stream->len >= 4) {
-		uint32_t lo = doip_stream_read_le_hword(doip_stream);
-		uint32_t hi = doip_stream_read_le_hword(doip_stream);
+		uint32_t lo = doip_stream_read_le16(doip_stream);
+		uint32_t hi = doip_stream_read_le16(doip_stream);
 		val = hi << 16 | lo;
 	}
 	return val;
 }
 
-uint64_t doip_stream_read_le_double_word(doip_stream_t *doip_stream)
+uint64_t doip_stream_read_le64(doip_stream_t *doip_stream)
 {
 	uint64_t val = 0;
 
 	if (doip_stream->cap - doip_stream->len >= 8) {
-		uint64_t lo = doip_stream_read_le_word(doip_stream);
-		uint64_t hi = doip_stream_read_le_word(doip_stream);
+		uint64_t lo = doip_stream_read_le32(doip_stream);
+		uint64_t hi = doip_stream_read_le32(doip_stream);
 		val = hi << 32 | lo;
 	}
 	return val;
