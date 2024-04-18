@@ -3,8 +3,9 @@
 #include "doip_utils.h"
 #include "list.h"
 
-#include <stdbool.h>
 #include <ev.h>
+#include <stdbool.h>
+#include <time.h>
 #include <errno.h>
 #include <assert.h>
 #include <stdint.h>
@@ -689,6 +690,45 @@ static char *routing_activation_failed_reason(int errcode)
 	}
 }
 
+static void doip_entity_send_alive_check_request_on_single_socket(doip_client_t *target)
+{
+	doip_stream_t strm;
+	uint8_t buffer[16] = {0};
+
+	if (target->status != DoIP_Connection_RoutingActivated) {
+		return;
+	}
+
+	doip_stream_init(&strm, buffer, sizeof(buffer));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Alive_Check_Request, 0));
+	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
+
+	doip_entity_tcp_send(target, doip_stream_start_ptr(&strm), doip_stream_len(&strm));
+
+	ev_timer_start(target->doip_entity->loop, &target->alive_check_timer);
+}
+
+static void doip_entity_send_alive_check_request_on_all_tcp_socket(doip_client_t *doip_client)
+{
+	doip_client_t *pos;
+
+	list_for_each_entry(pos, &doip_client->doip_entity->tcp_server.head, list) {
+		if (pos->status == DoIP_Connection_RoutingActivated && pos->ta && pos->handler) {
+			doip_entity_send_alive_check_request_on_single_socket(pos);
+		}
+	}
+}
+
+static void doip_entity_send_alive_check_request(doip_client_t *target, bool all)
+{
+	if (all) {
+		doip_entity_send_alive_check_request_on_all_tcp_socket(target);
+
+	} else {
+		doip_entity_send_alive_check_request_on_single_socket(target);
+	}
+}
+
 static void routing_activation_request_handler(doip_client_t *doip_client)
 {
 	doip_stream_t strm;
@@ -744,6 +784,7 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 	 */
 	list_for_each_entry(pos, &doip_entity->tcp_server.head, list) {
 		if (pos->ta == logic_addr && pos->handler != doip_client->handler) {
+			doip_entity_send_alive_check_request(pos, 0);
 			errcode = Routine_Activation_SA_Already_Registered;
 			doip_client->status = DoIP_Connection_Finalization;
 			goto finish;
@@ -756,6 +797,7 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 	 * is unavailable according to the socket handler requirements in 7.2.4
 	 */
 	if (doip_entity->tcp_server.client_nums == doip_entity->tcp_server.client_cap && doip_client->status == DoIP_Connection_RoutingActivated) {
+		doip_entity_send_alive_check_request(doip_client, 1);
 		errcode = Routine_Activation_All_Socket_Registered;
 		doip_client->status = DoIP_Connection_Finalization;
 		goto finish;
@@ -826,6 +868,8 @@ static void alive_check_response_handler(doip_client_t *doip_client)
 	 * connection alive, i.e. it can be sent by the external test equipment even if it has not previously received an alive check
 	 * request from a DoIP entity.
 	 */
+
+	ev_timer_stop(doip_client->doip_entity->loop, &doip_client->alive_check_timer);
 }
 
 static bool is_sa_registered(doip_client_t *doip_client, uint16_t sa)
@@ -1169,11 +1213,9 @@ static void alive_check_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
 {
 	doip_client_t *doip_client = (doip_client_t *)w->data;
 
-	ev_timer_stop(loop, w);
+	doip_assert(!!doip_client, "doip_client is NULL");
 
-	if (doip_client->status != DoIP_Connection_RoutingActivated) {
-		doip_client->status = DoIP_Connection_Finalization;
-	}
+	doip_client->status = DoIP_Connection_Finalization;
 }
 
 static void data_collection_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
