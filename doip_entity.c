@@ -106,22 +106,6 @@ struct doip_entity {
 	struct ev_loop *loop;
 }; /* doip entity */
 
-static void doip_assert(int expr, const char *format, ...)
-{
-	va_list ap;
-	char buffer[1024];
-
-	if (expr) {
-		return;
-	}
-
-	va_start(ap, format);
-	vsnprintf(buffer, sizeof(buffer), format, ap);
-	va_end(ap);
-	logd("%s\n", buffer);
-	assert(expr);
-}
-
 static const char *show_message_info(uint16_t type)
 {
 	switch (type) {
@@ -1213,7 +1197,7 @@ static void alive_check_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
 {
 	doip_client_t *doip_client = (doip_client_t *)w->data;
 
-	doip_assert(!!doip_client, "doip_client is NULL");
+	doip_assert(!!doip_client, "doip_client is NULL\n");
 
 	doip_client->status = DoIP_Connection_Finalization;
 }
@@ -1264,11 +1248,11 @@ static void accept_cb(struct ev_loop *loop, ev_io *w, int e)
 	fcntl(connfd, F_SETFL, fcntl(connfd, F_GETFL, 0) | O_NONBLOCK);
 
 	doip_client = doip_malloc(sizeof(*doip_client));
-	doip_assert(!!doip_client, "doip_malloc failed");
+	doip_assert(!!doip_client, "doip_malloc failed\n");
 
 	doip_client->doip_pdu.payload_cap = MAX_DOIP_PDU_SIZE;
 	doip_client->doip_pdu.payload = doip_malloc(MAX_DOIP_PDU_SIZE);
-	doip_assert(!!doip_client->doip_pdu.payload, "doip_malloc failed");
+	doip_assert(!!doip_client->doip_pdu.payload, "doip_malloc failed\n");
 
 	doip_client->watcher.data = doip_client;
 	doip_client->initial_activity_timer.data = doip_client;
@@ -1492,7 +1476,7 @@ static void tcp_client_cleanup(doip_client_t *doip_client)
 {
 	struct ev_loop *loop = doip_client->doip_entity->loop;
 
-	doip_assert(doip_client->handler == doip_client->watcher.fd, "doip_client->handler(%d) != doip_client->watcher->fd(%d)", doip_client->handler, doip_client->watcher.fd);
+	doip_assert(doip_client->handler == doip_client->watcher.fd, "doip_client->handler(%d) != doip_client->watcher->fd(%d)\n", doip_client->handler, doip_client->watcher.fd);
 	ev_io_stop(loop, &doip_client->watcher);
 	ev_timer_stop(loop, &doip_client->general_activity_timer);
 	ev_timer_stop(loop, &doip_client->initial_activity_timer);
@@ -1520,7 +1504,7 @@ static void doip_tcp_server_cleanup(doip_entity_t *doip_entity)
 	tcp_server->client_nums = 0;
 	INIT_LIST_HEAD(&tcp_server->head);
 
-	doip_assert(tcp_server->handler == tcp_server->watcher.fd, "tcp_server->handler(%d) != tcp_server->watcher->fd(%d)", tcp_server->handler, tcp_server->watcher.fd);
+	doip_assert(tcp_server->handler == tcp_server->watcher.fd, "tcp_server->handler(%d) != tcp_server->watcher->fd(%d)\n", tcp_server->handler, tcp_server->watcher.fd);
 	ev_io_stop(loop, &tcp_server->watcher);
 	close(tcp_server->watcher.fd);
 	tcp_server->handler = -1;
@@ -1561,7 +1545,7 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 	list_for_each_entry_safe(client, temp, &tcp_server->head, list) {
 		if (client->status == DoIP_Connection_Finalization) {
 			tcp_client_cleanup(client);
-			doip_assert(tcp_server->client_nums > 0, "tcp_server->client_nums must > 0");
+			doip_assert(tcp_server->client_nums > 0, "tcp_server->client_nums must > 0\n");
 			--tcp_server->client_nums;
 		}
 	}
@@ -1653,7 +1637,7 @@ doip_entity_t *doip_entity_alloc()
 	doip_entity->tcp_server.doip_entity = doip_entity;
 	doip_entity->udp_server.doip_entity = doip_entity;
 
-	doip_assert(doip_entity->loop && doip_entity->udp_server.doip_pdu.payload , "doip_malloc failed");
+	doip_assert(doip_entity->loop && doip_entity->udp_server.doip_pdu.payload , "doip_malloc failed\n");
 
 	doip_entity->initial_activity_time = T_TCP_Initial_Inactivity;
 	doip_entity->general_activity_time = T_TCP_General_Inactivity;
@@ -1674,7 +1658,7 @@ doip_entity_t *doip_entity_alloc()
 
 static void doip_entity_info(doip_entity_t *doip_entity)
 {
-	doip_assert(!!doip_entity, "doip_entity invalid");
+	doip_assert(!!doip_entity, "doip_entity invalid\n");
 
 	logd("doip entity basic info:\n");
 	logd("udp server %s:%d\n", doip_entity->udp_server.addr, doip_entity->udp_server.port);

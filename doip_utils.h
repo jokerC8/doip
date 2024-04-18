@@ -19,7 +19,7 @@ void doip_free(void *ptr);
 	fprintf(stdout, "%s", buffer); \
 } while (0)
 
-#define loge(format, ...) do {\
+#define loge(format, args...) do {\
 	int offset = 0; \
 	char buffer[1024] = {0}; \
 	time_t cur; \
@@ -29,6 +29,13 @@ void doip_free(void *ptr);
 	offset += strftime(buffer + offset, sizeof(buffer) - offset, "\033[31m%Y-%m-%d %H:%M:%S ", &tm); \
 	offset += snprintf(buffer + offset, sizeof(buffer) - offset, "[line:%d, func:%s] " format "\033[0m", __LINE__, __FUNCTION__, ##args); \
 	fprintf(stderr, "%s", buffer); \
+} while (0)
+
+#define doip_assert(expr, format, args...) do {\
+	if (!!!expr) { \
+		loge(format, ##args); \
+		assert(!!expr); \
+	} \
 } while (0)
 
 #endif
