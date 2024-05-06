@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include "doip_entity.h"
 
 #define VIN "0123456789abcdefg"

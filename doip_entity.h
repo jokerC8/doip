@@ -77,11 +77,36 @@
 #define Diagnostic_Message_Transport_Protocol_Error    0x08
 /* 0x09~0xFF reserved by ISO 13400 */
 
+#define DoIP_OK 1
+#define DoIP_ERROR 0
+
 /*------------------------------------------------------------------------------------------------------------*/
 
 struct doip_entity;
 
 typedef struct doip_entity doip_entity_t;
+
+typedef struct doip_request {
+	uint16_t sa;
+	uint16_t ta;
+	uint8_t ta_type;
+	uint32_t len;
+	uint8_t data[4096];
+} doip_request_t;
+
+typedef struct doip_indication {
+	uint16_t sa;
+	uint16_t ta;
+	uint8_t ta_type;
+	uint32_t len;
+	uint8_t data[4096];
+} doip_indication_t;
+
+typedef struct doip_master {
+	doip_request_t request;
+	doip_indication_t indication;
+	uint8_t result;
+} doip_master_t;
 
 /*------------------------------------------------------------------------------------------------------------*/
 

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/un.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -78,11 +79,20 @@ typedef struct doip_server {
 	doip_pdu_t doip_pdu;  /* for udp server */
 	struct sockaddr_in broadcast; /* for udp server */
 	struct sockaddr_in target;    /* for udp server */
-	struct list_head head;
+	struct list_head head; /* for tcp server */
 	ev_io watcher;
 	ev_timer vehicle_identify_announce_timer; /* for udp server */
 	doip_entity_t *doip_entity;
 } doip_server_t; /* doip server */
+
+typedef struct doip_ipc {
+	int status;
+	int handler;
+	char unix_socket_file[128];
+	int capacity;
+	uint8_t *buffer;
+	ev_io watcher;
+} doip_ipc_t;
 
 struct doip_entity {
 	char vin[20];
@@ -99,6 +109,8 @@ struct doip_entity {
 	double announce_wait_time;
 	int announce_count;
 	double announce_internal;
+	doip_ipc_t doip_ipc_receiver; /* recv uds response from uds module */
+	doip_ipc_t doip_ipc_sender;   /* send uds request to uds module */
 	doip_server_t tcp_server;
 	doip_server_t udp_server;
 	ev_prepare prepare_w;
@@ -869,7 +881,7 @@ static bool target_address_verify(doip_client_t *doip_client, uint16_t ta)
 {
 	doip_entity_t *doip_entity = doip_client->doip_entity;
 
-	return (doip_entity->sa == ta);
+	return (doip_entity->sa == ta || doip_entity->func_addr == ta);
 }
 
 static bool diagnostic_message_size_verify(int size)
@@ -949,6 +961,58 @@ static const char *diagnostic_negative_reason(int errcode)
 		default:
 			return "unknow";
 	}
+}
+
+#if 0
+static void send_diagnostic_response(doip_client_t *doip_client, doip_master_t *master)
+{
+	doip_stream_t strm = {0};
+
+	doip_assert(!!master, "doip master is NULL\n");
+
+	doip_stream_init(&strm, master->indication.data, sizeof(master->indication.data));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Message, 0));
+	update_doip_header_len(doip_stream_start_ptr(&strm), sizeof(master->indication.data), master->indication.len);
+
+	doip_hexdump(doip_stream_start_ptr(&strm), doip_stream_len(&strm) + master->indication.len);
+	doip_entity_tcp_send(doip_client, doip_stream_start_ptr(&strm), doip_stream_len(&strm) + master->indication.len);
+}
+#endif
+
+static int uds_service_handler(doip_client_t *doip_client)
+{
+	uint8_t ta_type;
+	uint16_t sa, ta;
+	doip_stream_t strm = {0};
+	doip_ipc_t *doip_ipc_sender = &doip_client->doip_entity->doip_ipc_sender;
+
+	doip_stream_init(&strm, doip_client->doip_pdu.payload, doip_client->doip_pdu.payload_len);
+	sa = doip_stream_read_be16(&strm);
+	ta = doip_stream_read_be16(&strm);
+	ta_type = (ta == doip_client->doip_entity->func_addr);
+
+	doip_stream_init(&strm, doip_ipc_sender->buffer, doip_ipc_sender->capacity);
+	doip_stream_write_be16(&strm, sa);
+	doip_stream_write_be16(&strm, ta);
+	doip_stream_write_byte(&strm, ta_type);
+	doip_stream_write_data(&strm, doip_client->doip_pdu.payload + 12, doip_client->doip_pdu.payload_len);
+
+	struct sockaddr_un target;
+
+	bzero(&target, sizeof(target));
+	target.sun_family = AF_UNIX;
+	memcpy(target.sun_path, doip_client->doip_entity->doip_ipc_sender.unix_socket_file, sizeof(target.sun_path) - 1);
+
+	ssize_t count = sendto(doip_ipc_sender->handler, doip_stream_start_ptr(&strm), doip_stream_len(&strm), 0, (struct sockaddr *)&target, sizeof(target));
+	/* error occurred */
+	if (count < 0) {
+		doip_client->doip_entity->doip_ipc_sender.status = DoIP_Connection_Finalization;
+	}
+	if (count <= 0) {
+		return 0;
+	}
+
+	return count;
 }
 
 static void disgnostic_message_handler(doip_client_t *doip_client)
@@ -1036,6 +1100,30 @@ static void disgnostic_message_handler(doip_client_t *doip_client)
 	}
 
 	send_diagnostic_positive_acknowledge_code(doip_client);
+
+	uds_service_handler(doip_client);
+
+#if 0
+	doip_master_t master = {0};
+
+	master.request.sa = sa;
+	master.request.ta = ta;
+	memcpy(master.request.data, doip_pdu->payload + 12, doip_pdu->data_len - 12);
+	master.request.len = doip_pdu->data_len - 12;
+	master.request.ta_type = (ta == doip_client->doip_entity->func_addr) ? 1 : 0;
+
+#if 1
+	logd("sa:%04x\n", master.request.sa);
+	logd("ta:%04x\n", master.request.ta);
+	logd("len:%x\n", master.request.len);
+	logd("ta_type:%02x\n", master.request.ta_type);
+	doip_hexdump(master.request.data, master.request.len);
+#endif
+
+	/* TODO uds module handler */
+	uds_service_handler(&master);
+	send_diagnostic_response(doip_client, &master);
+#endif
 
 	return;
 
@@ -1509,8 +1597,10 @@ static void doip_tcp_server_cleanup(doip_entity_t *doip_entity)
 	close(tcp_server->watcher.fd);
 	tcp_server->handler = -1;
 	bzero(&tcp_server->watcher, sizeof(ev_io));
+	tcp_server->status = DoIP_Connection_Socket_Uninitialized;
 }
 
+/* cleanup udp server */
 static void doip_udp_server_cleanup(doip_entity_t *doip_entity)
 {
 	doip_server_t *udp_server = &doip_entity->udp_server;
@@ -1518,6 +1608,26 @@ static void doip_udp_server_cleanup(doip_entity_t *doip_entity)
 	ev_io_stop(doip_entity->loop, &udp_server->watcher);
 	close(udp_server->watcher.fd);
 	ev_timer_stop(doip_entity->loop, &udp_server->vehicle_identify_announce_timer);
+	udp_server->status = DoIP_Connection_Socket_Uninitialized;
+}
+
+/* unix socket cleanup */
+static void doip_ipc_receiver_cleanup(doip_entity_t *doip_entity)
+{
+	doip_assert(doip_entity->doip_ipc_receiver.watcher.fd == doip_entity->doip_ipc_receiver.handler, "socket handler changed\n");
+	ev_io_stop(doip_entity->loop, &doip_entity->doip_ipc_receiver.watcher);
+	close(doip_entity->doip_ipc_receiver.watcher.fd);
+	doip_entity->doip_ipc_receiver.handler = -1;
+	doip_entity->doip_ipc_receiver.status = DoIP_Connection_Socket_Uninitialized;
+}
+
+static void doip_ipc_sender_cleanup(doip_entity_t *doip_entity)
+{
+	if (doip_entity->doip_ipc_sender.handler > 0) {
+		close(doip_entity->doip_ipc_sender.handler);
+		doip_entity->doip_ipc_sender.handler = -1;
+		doip_entity->doip_ipc_sender.status = DoIP_Connection_Socket_Uninitialized;
+	}
 }
 
 /* this function do all cleanup */
@@ -1527,6 +1637,8 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 	doip_entity_t *doip_entity = ev_userdata(loop);
 	doip_server_t *tcp_server = &doip_entity->tcp_server;
 	doip_server_t *udp_server = &doip_entity->udp_server;
+	doip_ipc_t *doip_ipc_receiver = &doip_entity->doip_ipc_receiver;
+	doip_ipc_t *doip_ipc_sender = &doip_entity->doip_ipc_sender;
 
 	/* cleanup tcp server */
 	if (tcp_server->status == DoIP_Connection_Finalization) {
@@ -1536,6 +1648,15 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 	/* cleanup udp server */
 	if (udp_server->status == DoIP_Connection_Finalization) {
 		doip_udp_server_cleanup(doip_entity);
+	}
+
+	/* cleanup doip ipc socket */
+	if (doip_ipc_receiver->status == DoIP_Connection_Finalization) {
+		doip_ipc_receiver_cleanup(doip_entity);
+	}
+
+	if (doip_ipc_sender->status == DoIP_Connection_Finalization) {
+		doip_ipc_sender_cleanup(doip_entity);
 	}
 
 	if (tcp_server->client_nums == 0) {
@@ -1549,6 +1670,105 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 			--tcp_server->client_nums;
 		}
 	}
+}
+
+static int doip_ipc_receiver_init(doip_entity_t *doip_entity)
+{
+	struct sockaddr_un un;
+
+	if ((doip_entity->doip_ipc_receiver.handler = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+		loge("socket failed(%s)\n", strerror(errno));
+		return -1;
+	}
+
+	fcntl(doip_entity->doip_ipc_receiver.handler, F_SETFL, fcntl(doip_entity->doip_ipc_receiver.handler, F_GETFL, 0) | O_NONBLOCK);
+
+	bzero(&un, sizeof(un));
+	un.sun_family = AF_UNIX;
+	if (strlen(doip_entity->doip_ipc_receiver.unix_socket_file) > 0) {
+		memcpy(un.sun_path, doip_entity->doip_ipc_receiver.unix_socket_file, sizeof(un.sun_path) - 1);
+	} else {
+		memcpy(un.sun_path, "/tmp/doip_ipc_receiver", sizeof(un.sun_path) - 1);
+	}
+
+	unlink(un.sun_path);
+
+	if (bind(doip_entity->doip_ipc_receiver.handler, (struct sockaddr *)&un, sizeof(un)) < 0) {
+		loge("bind failed(%s)\n", strerror(errno));
+		goto finish;
+	}
+
+	doip_entity->doip_ipc_receiver.capacity = MAX_DOIP_PDU_SIZE;
+	doip_entity->doip_ipc_receiver.status = DoIP_Connection_Socket_Initialized;
+	if (!doip_entity->doip_ipc_receiver.buffer) {
+		doip_entity->doip_ipc_receiver.buffer = doip_malloc(doip_entity->doip_ipc_receiver.capacity);
+		doip_assert(doip_entity->doip_ipc_receiver.buffer, "malloc failed\n");
+	}
+
+	return doip_entity->doip_ipc_receiver.handler;
+
+finish:
+	close(doip_entity->doip_ipc_receiver.handler);
+	doip_entity->doip_ipc_receiver.handler = -1;
+	return -1;
+}
+
+static int doip_ipc_sender_init(doip_entity_t *doip_entity)
+{
+	struct sockaddr_un un;
+
+	if ((doip_entity->doip_ipc_sender.handler = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+		loge("socket failed(%s)\n", strerror(errno));
+		return -1;
+	}
+
+	fcntl(doip_entity->doip_ipc_sender.handler, F_SETFL, fcntl(doip_entity->doip_ipc_sender.handler, F_GETFL, 0) | O_NONBLOCK);
+
+	doip_entity->doip_ipc_sender.capacity = MAX_DOIP_PDU_SIZE;
+	if (!doip_entity->doip_ipc_sender.buffer) {
+		doip_entity->doip_ipc_sender.buffer = doip_malloc(doip_entity->doip_ipc_sender.capacity);
+		doip_assert(doip_entity->doip_ipc_sender.buffer, "malloc failed\n");
+	}
+
+	bzero(&un, sizeof(un));
+	un.sun_family = AF_UNIX;
+	if (strlen(doip_entity->doip_ipc_sender.unix_socket_file) > 0) {
+		memcpy(un.sun_path, doip_entity->doip_ipc_sender.unix_socket_file, sizeof(un.sun_path) - 1);
+	} else {
+		memcpy(un.sun_path, "/tmp/doip_ipc_sender", sizeof(un.sun_path) - 1);
+	}
+	doip_entity->doip_ipc_sender.status = DoIP_Connection_Socket_Initialized;
+
+	return doip_entity->doip_ipc_sender.handler;
+}
+
+static int diagnostic_message_respon_handler(uint8_t *data, int len)
+{
+	/* TODO */
+	return 0;
+}
+
+static void doip_ipc_receiver_read(struct ev_loop *loop, ev_io *w, int e)
+{
+	ssize_t count = 0;
+	doip_entity_t *doip_entity = ev_userdata(loop);
+
+	count = recv(w->fd, doip_entity->doip_ipc_receiver.buffer, doip_entity->doip_ipc_receiver.capacity, 0);
+	/* error occurred */
+	if (count < 0) {
+		doip_entity->doip_ipc_receiver.status = DoIP_Connection_Finalization;
+	}
+	if (count <= 0) {
+		return;
+	}
+
+	diagnostic_message_respon_handler(doip_entity->doip_ipc_receiver.buffer, count);
+}
+
+static void doip_ipc_receiver_start(struct ev_loop *loop, doip_entity_t *doip_entity)
+{
+	ev_io_init(&doip_entity->doip_ipc_receiver.watcher, doip_ipc_receiver_read, doip_entity->doip_ipc_receiver.handler, EV_READ);
+	ev_io_start(loop, &doip_entity->doip_ipc_receiver.watcher);
 }
 
 static void prepare_cb(struct ev_loop *loop, ev_prepare *w, int e)
@@ -1569,6 +1789,21 @@ static void prepare_cb(struct ev_loop *loop, ev_prepare *w, int e)
 			return;
 		}
 		udp_server_start(loop, doip_entity);
+	}
+
+	if (doip_entity->doip_ipc_receiver.status == DoIP_Connection_Socket_Uninitialized) {
+		logd("doip_ipc_receiver_init\n");
+		if (doip_ipc_receiver_init(doip_entity) < 0) {
+			return;
+		}
+		doip_ipc_receiver_start(loop, doip_entity);
+	}
+
+	if (doip_entity->doip_ipc_sender.status == DoIP_Connection_Socket_Uninitialized) {
+		logd("doip_ipc_sender_init\n");
+		if (doip_ipc_sender_init(doip_entity) < 0) {
+			return;
+		}
 	}
 
 	doip_entity_cleanup(loop);

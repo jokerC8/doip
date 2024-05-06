@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "doip_utils.h"
+#include <time.h>
 #include "doip_entity.h"
 
 void *doip_malloc(unsigned long size)
