@@ -57,4 +57,6 @@ void doip_free(void *ptr);
 	fprintf(stdout, "%s\n", buffer); \
 } while (0)
 
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+
 #endif

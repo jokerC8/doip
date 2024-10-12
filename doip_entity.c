@@ -22,14 +22,13 @@
 #error "libev must build with EV_MULTIPLICITY"
 #endif
 
-#define BACKLOG							(128)
-#define MAX_CONNECTIONS          		(100)
-#define MIN_DYNAMIC_PORT         		(49152)
-#define MAX_DYNAMIC_PORT         		(65535)
-#define DATA_COLLECTION_TIMEOUT  		(60)
-
-#define MIN(x,y) ((x)>(y) ? (y) : (x))
-
+#define DOIP_PROTOCOL_VERSION           (0x02)
+#define BACKLOG                         (128)
+#define DOIP_CLIENTS_LIMITATION         (100)
+#define MIN_DYNAMIC_PORT                (49152)
+#define MAX_DYNAMIC_PORT                (65535)
+#define DATA_COLLECTION_TIMEOUT         (60)
+#define DOIP_UDP_PDU_SIZE               (256)
 /*------------------------------------------------------------------------------------------------------*/
 
 enum {
@@ -60,9 +59,9 @@ typedef struct doip_client {
 	char client[32];
 	ev_io watcher;
 	ev_timer data_collection_timer;
-	ev_timer initial_activity_timer;
-	ev_timer general_activity_timer;
-	ev_timer alive_check_timer;
+	ev_timer tcp_initial_activity_timer;
+	ev_timer tcp_general_activity_timer;
+	ev_timer tcp_alive_check_timer;
 	doip_pdu_t doip_pdu;
 	struct list_head list;
 	doip_entity_t *doip_entity;
@@ -80,37 +79,26 @@ typedef struct doip_server {
 	struct sockaddr_in broadcast; /* for udp server */
 	struct sockaddr_in target;    /* for udp server */
 	struct list_head head; /* for tcp server */
-	ev_io watcher;
+	ev_io watcher; /* for tcp and udp server */
 	ev_timer vehicle_identify_announce_timer; /* for udp server */
 	doip_entity_t *doip_entity;
 } doip_server_t; /* doip server */
-
-typedef struct doip_ipc {
-	int status;
-	int handler;
-	char unix_socket_file[128];
-	int capacity;
-	uint8_t *buffer;
-	ev_io watcher;
-} doip_ipc_t;
 
 struct doip_entity {
 	char vin[20];
 	uint8_t eid[6];
 	uint8_t gid[6];
 	void *userdata;
-	uint16_t sa;
+	uint16_t logic_addr;
 	uint16_t func_addr;
 	uint16_t *white_list;
 	uint16_t white_list_count;
-	double initial_activity_time;
-	double general_activity_time;
-	double alive_check_time;
-	double announce_wait_time;
-	int announce_count;
-	double announce_internal;
-	doip_ipc_t doip_ipc_receiver; /* recv uds response from uds module */
-	doip_ipc_t doip_ipc_sender;   /* send uds request to uds module */
+	double tcp_initial_activity_time;
+	double tcp_general_activity_time;
+	double tcp_alive_check_time;
+	double doip_announce_wait;
+	int doip_announce_num;
+	double doip_announce_interval;
 	doip_server_t tcp_server;
 	doip_server_t udp_server;
 	ev_prepare prepare_w;
@@ -144,6 +132,26 @@ static const char *show_message_info(uint16_t type)
 	}
 }
 
+static char *doip_client_status(int status)
+{
+	switch (status) {
+		case DoIP_Connection_Socket_Uninitialized:
+			return "uninitialized";
+		case DoIP_Connection_Socket_Initialized:
+			return "initialized";
+		case DoIP_Connection_Pending_For_Authentication:
+			return "pending for authentication";
+		case DoIP_Connection_Pending_For_Confirmation:
+			return "pending for confirmation";
+		case DoIP_Connection_RoutingActivated:
+			return "routing activated";
+		case DoIP_Connection_Finalization:
+			return "finalized";
+		default:
+			return "unknow";
+	}
+}
+
 void doip_entity_set_userdata(doip_entity_t *doip_entity, void *userdata)
 {
 	if (doip_entity) {
@@ -159,82 +167,6 @@ void *doip_entity_userdata(doip_entity_t *doip_entity)
 	return NULL;
 }
 
-void doip_entity_set_initial_activity_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->initial_activity_time = time;
-	}
-}
-
-void doip_entity_set_general_activity_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->general_activity_time = time;
-	}
-}
-
-void doip_entity_set_announce_wait_time(doip_entity_t *doip_entity, int time)
-{
-	if (doip_entity) {
-		doip_entity->announce_wait_time = time;
-	}
-}
-
-void doip_entity_set_announce_count(doip_entity_t *doip_entity, int count)
-{
-	if (doip_entity) {
-		doip_entity->announce_count = count;
-	}
-}
-
-void doip_entity_set_announce_internal(doip_entity_t *doip_entity, int internal)
-{
-	if (doip_entity) {
-		doip_entity->announce_internal = internal;
-	}
-}
-
-void doip_entity_set_max_tcp_clients(doip_entity_t *doip_entity, int number)
-{
-	if (doip_entity) {
-		doip_entity->tcp_server.client_cap = number;
-	}
-}
-
-void doip_entity_set_tcp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
-{
-	if (!(doip_entity && addr)) {
-		return;
-	}
-
-	doip_entity->tcp_server.port = port;
-	memcpy(doip_entity->tcp_server.addr, addr, sizeof(doip_entity->tcp_server.addr));
-}
-
-void doip_entity_set_udp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port)
-{
-	if (!(doip_entity && addr)) {
-		return;
-	}
-
-	doip_entity->udp_server.port = port;
-	memcpy(doip_entity->udp_server.addr, addr, sizeof(doip_entity->udp_server.addr));
-}
-
-void doip_entity_set_logic_addr(doip_entity_t *doip_entity, unsigned short addr)
-{
-	if (doip_entity) {
-		doip_entity->sa = addr;
-	}
-}
-
-void doip_entity_set_func_addr(doip_entity_t *doip_entity, unsigned short addr)
-{
-	if (doip_entity) {
-		doip_entity->func_addr = addr;
-	}
-}
-
 void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr, int count)
 {
 	if (doip_entity) {
@@ -246,26 +178,32 @@ void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr
 
 void doip_entity_set_vin(doip_entity_t *doip_entity, const char *vin, int len)
 {
-	if (doip_entity) {
-		bzero(doip_entity->vin, sizeof(doip_entity->vin));
-		memcpy(doip_entity->vin, vin, sizeof(doip_entity->vin));
+	if (!(doip_entity && (len == 17))) {
+		return;
 	}
+
+	bzero(doip_entity->vin, sizeof(doip_entity->vin));
+	memcpy(doip_entity->vin, vin, sizeof(doip_entity->vin));
 }
 
-void doip_entity_set_eid(doip_entity_t *doip_entity, unsigned char eid[6])
+void doip_entity_set_eid(doip_entity_t *doip_entity, unsigned char *eid, int len)
 {
-	if (doip_entity) {
-		bzero(doip_entity->eid, sizeof(doip_entity->eid));
-		memcpy(doip_entity->eid, eid, sizeof(doip_entity->eid));
+	if (!(doip_entity && (len == 6))) {
+		return;
 	}
+
+	bzero(doip_entity->eid, sizeof(doip_entity->eid));
+	memcpy(doip_entity->eid, eid, sizeof(doip_entity->eid));
 }
 
-void doip_entity_set_gid(doip_entity_t *doip_entity, unsigned char gid[6])
+void doip_entity_set_gid(doip_entity_t *doip_entity, unsigned char *gid, int len)
 {
-	if (doip_entity) {
-		bzero(doip_entity->gid, sizeof(doip_entity->gid));
-		memcpy(doip_entity->gid, gid, sizeof(doip_entity->gid));
+	if (!(doip_entity && (len == 6))) {
+		return;
 	}
+
+	bzero(doip_entity->gid, sizeof(doip_entity->gid));
+	memcpy(doip_entity->gid, gid, sizeof(doip_entity->gid));
 }
 
 static void update_doip_header_len(uint8_t *data, int len, uint32_t payload_len)
@@ -284,8 +222,8 @@ static int assemble_doip_header(uint8_t *data, int len, uint16_t payload_type, u
 	doip_stream_t strm;
 
 	doip_stream_init(&strm, data, len);
-	doip_stream_write_byte(&strm, 0x02);
-	doip_stream_write_byte(&strm, 0xfd);
+	doip_stream_write_byte(&strm, DOIP_PROTOCOL_VERSION);
+	doip_stream_write_byte(&strm, ~DOIP_PROTOCOL_VERSION);
 	doip_stream_write_be16(&strm, payload_type);
 	doip_stream_write_be32(&strm, payload_len);
 	return doip_stream_len(&strm);
@@ -293,7 +231,8 @@ static int assemble_doip_header(uint8_t *data, int len, uint16_t payload_type, u
 
 static ssize_t udp_server_send(doip_entity_t *doip_entity, uint8_t *data, int len)
 {
-	if (!(doip_entity && doip_entity->udp_server.status == DoIP_Connection_Socket_Initialized && doip_entity->udp_server.handler > 0)) {
+	if (!(doip_entity && doip_entity->udp_server.status == DoIP_Connection_Socket_Initialized && \
+				doip_entity->udp_server.handler > 0)) {
 		return 0;
 	}
 
@@ -524,7 +463,7 @@ static int vehicle_identify_announce(doip_entity_t *doip_entity)
 	doip_stream_init(&strm, buffer, sizeof(buffer));
 	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
 	doip_stream_write_data(&strm, (uint8_t *)doip_entity->vin, 17);
-	doip_stream_write_be16(&strm, doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_entity->logic_addr);
 	doip_stream_write_data(&strm, doip_entity->eid, sizeof(doip_entity->eid));
 	doip_stream_write_data(&strm, doip_entity->gid, sizeof(doip_entity->gid));
 	doip_stream_write_byte(&strm, 0x00);
@@ -544,7 +483,7 @@ static int vehicle_identify_respon(doip_entity_t *doip_entity)
 	doip_stream_init(&strm, buffer, sizeof(buffer));
 	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Vehicle_Announcememt_Message, 0));
 	doip_stream_write_data(&strm, (uint8_t *)doip_entity->vin, 17);
-	doip_stream_write_be16(&strm, doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_entity->logic_addr);
 	doip_stream_write_data(&strm, doip_entity->eid, sizeof(doip_entity->eid));
 	doip_stream_write_data(&strm, doip_entity->gid, sizeof(doip_entity->gid));
 	doip_stream_write_byte(&strm, 0x00);
@@ -644,7 +583,7 @@ static ssize_t send_routing_activation_negative_respon(doip_client_t *doip_clien
 	doip_stream_init(&strm, buffer, sizeof(buffer));
 	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
 	doip_stream_write_be16(&strm, doip_client->ta);
-	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_client->doip_entity->logic_addr);
 	doip_stream_write_byte(&strm, errcode);
 	doip_stream_write_be32(&strm, 0xffffffff);
 	doip_stream_write_be32(&strm, 0xffffffff);
@@ -701,7 +640,7 @@ static void doip_entity_send_alive_check_request_on_single_socket(doip_client_t 
 
 	doip_entity_tcp_send(target, doip_stream_start_ptr(&strm), doip_stream_len(&strm));
 
-	ev_timer_start(target->doip_entity->loop, &target->alive_check_timer);
+	ev_timer_start(target->doip_entity->loop, &target->tcp_alive_check_timer);
 }
 
 static void doip_entity_send_alive_check_request_on_all_tcp_socket(doip_client_t *doip_client)
@@ -813,9 +752,10 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 
 	/* routing activation response */
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Routing_Activation_Response, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), \
+				Routing_Activation_Response, 0));
 	doip_stream_write_be16(&strm, doip_client->ta);
-	doip_stream_write_be16(&strm, doip_entity->sa);
+	doip_stream_write_be16(&strm, doip_entity->logic_addr);
 	doip_stream_write_byte(&strm, Routine_Activation_Success);
 	doip_stream_write_be32(&strm, 0xffffffff);
 	doip_stream_write_be32(&strm, 0xffffffff);
@@ -824,7 +764,7 @@ static void routing_activation_request_handler(doip_client_t *doip_client)
 
 	doip_entity_tcp_send(doip_client, doip_stream_start_ptr(&strm), doip_stream_len(&strm));
 	doip_client->status = DoIP_Connection_RoutingActivated;
-	ev_timer_start(doip_entity->loop, &doip_client->general_activity_timer);
+	ev_timer_start(doip_entity->loop, &doip_client->tcp_general_activity_timer);
 	return;
 
 finish:
@@ -846,7 +786,8 @@ static void alive_check_request_handler(doip_client_t *doip_client)
 	}
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Alive_Check_Response, 0));
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), \
+				Alive_Check_Response, 0));
 	doip_stream_write_be16(&strm, doip_client->ta);
 
 	update_doip_header_len(doip_stream_start_ptr(&strm), doip_stream_len(&strm), doip_stream_len(&strm) - 8);
@@ -865,7 +806,7 @@ static void alive_check_response_handler(doip_client_t *doip_client)
 	 * request from a DoIP entity.
 	 */
 
-	ev_timer_stop(doip_client->doip_entity->loop, &doip_client->alive_check_timer);
+	ev_timer_stop(doip_client->doip_entity->loop, &doip_client->tcp_alive_check_timer);
 }
 
 static bool is_sa_registered(doip_client_t *doip_client, uint16_t sa)
@@ -881,7 +822,7 @@ static bool target_address_verify(doip_client_t *doip_client, uint16_t ta)
 {
 	doip_entity_t *doip_entity = doip_client->doip_entity;
 
-	return (doip_entity->sa == ta || doip_entity->func_addr == ta);
+	return (doip_entity->logic_addr == ta || doip_entity->func_addr == ta);
 }
 
 static bool diagnostic_message_size_verify(int size)
@@ -914,8 +855,9 @@ static size_t send_diagnostic_positive_acknowledge_code(doip_client_t *doip_clie
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Positive_ACK, 0));
-	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), \
+				Diagnostic_Positive_ACK, 0));
+	doip_stream_write_be16(&strm, doip_client->doip_entity->logic_addr);
 	doip_stream_write_be16(&strm, doip_client->ta);
 	doip_stream_write_byte(&strm, 0x00);
 
@@ -930,8 +872,9 @@ static size_t send_diagnostic_negative_acknowledge_code(doip_client_t *doip_clie
 	uint8_t buffer[16] = {0};
 
 	doip_stream_init(&strm, buffer, sizeof(buffer));
-	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Negative_ACK, 0));
-	doip_stream_write_be16(&strm, doip_client->doip_entity->sa);
+	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), \
+				Diagnostic_Negative_ACK, 0));
+	doip_stream_write_be16(&strm, doip_client->doip_entity->logic_addr);
 	doip_stream_write_be16(&strm, doip_client->ta);
 	doip_stream_write_byte(&strm, errcode);
 	doip_stream_write_data(&strm, doip_client->doip_pdu.payload + 12, doip_client->doip_pdu.data_len - 12);
@@ -963,56 +906,10 @@ static const char *diagnostic_negative_reason(int errcode)
 	}
 }
 
-#if 0
-static void send_diagnostic_response(doip_client_t *doip_client, doip_master_t *master)
-{
-	doip_stream_t strm = {0};
-
-	doip_assert(!!master, "doip master is NULL\n");
-
-	doip_stream_init(&strm, master->indication.data, sizeof(master->indication.data));
-	doip_stream_forward(&strm, assemble_doip_header(doip_stream_start_ptr(&strm), doip_stream_left_len(&strm), Diagnostic_Message, 0));
-	update_doip_header_len(doip_stream_start_ptr(&strm), sizeof(master->indication.data), master->indication.len);
-
-	doip_hexdump(doip_stream_start_ptr(&strm), doip_stream_len(&strm) + master->indication.len);
-	doip_entity_tcp_send(doip_client, doip_stream_start_ptr(&strm), doip_stream_len(&strm) + master->indication.len);
-}
-#endif
-
 static int uds_service_handler(doip_client_t *doip_client)
 {
-	uint8_t ta_type;
-	uint16_t sa, ta;
-	doip_stream_t strm = {0};
-	doip_ipc_t *doip_ipc_sender = &doip_client->doip_entity->doip_ipc_sender;
-
-	doip_stream_init(&strm, doip_client->doip_pdu.payload, doip_client->doip_pdu.payload_len);
-	sa = doip_stream_read_be16(&strm);
-	ta = doip_stream_read_be16(&strm);
-	ta_type = (ta == doip_client->doip_entity->func_addr);
-
-	doip_stream_init(&strm, doip_ipc_sender->buffer, doip_ipc_sender->capacity);
-	doip_stream_write_be16(&strm, sa);
-	doip_stream_write_be16(&strm, ta);
-	doip_stream_write_byte(&strm, ta_type);
-	doip_stream_write_data(&strm, doip_client->doip_pdu.payload + 12, doip_client->doip_pdu.payload_len);
-
-	struct sockaddr_un target;
-
-	bzero(&target, sizeof(target));
-	target.sun_family = AF_UNIX;
-	memcpy(target.sun_path, doip_client->doip_entity->doip_ipc_sender.unix_socket_file, sizeof(target.sun_path) - 1);
-
-	ssize_t count = sendto(doip_ipc_sender->handler, doip_stream_start_ptr(&strm), doip_stream_len(&strm), 0, (struct sockaddr *)&target, sizeof(target));
-	/* error occurred */
-	if (count < 0) {
-		doip_client->doip_entity->doip_ipc_sender.status = DoIP_Connection_Finalization;
-	}
-	if (count <= 0) {
-		return 0;
-	}
-
-	return count;
+	/* TODO */
+	return 0;
 }
 
 static void disgnostic_message_handler(doip_client_t *doip_client)
@@ -1103,28 +1000,6 @@ static void disgnostic_message_handler(doip_client_t *doip_client)
 
 	uds_service_handler(doip_client);
 
-#if 0
-	doip_master_t master = {0};
-
-	master.request.sa = sa;
-	master.request.ta = ta;
-	memcpy(master.request.data, doip_pdu->payload + 12, doip_pdu->data_len - 12);
-	master.request.len = doip_pdu->data_len - 12;
-	master.request.ta_type = (ta == doip_client->doip_entity->func_addr) ? 1 : 0;
-
-#if 1
-	logd("sa:%04x\n", master.request.sa);
-	logd("ta:%04x\n", master.request.ta);
-	logd("len:%x\n", master.request.len);
-	logd("ta_type:%02x\n", master.request.ta_type);
-	doip_hexdump(master.request.data, master.request.len);
-#endif
-
-	/* TODO uds module handler */
-	uds_service_handler(&master);
-	send_diagnostic_response(doip_client, &master);
-#endif
-
 	return;
 
 finish:
@@ -1163,7 +1038,7 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	doip_pdu_t *doip_pdu = &doip_client->doip_pdu;
 
 	/* flush general_activity_timer */
-	ev_timer_again(doip_entity->loop, &doip_client->general_activity_timer);
+	ev_timer_again(doip_entity->loop, &doip_client->tcp_general_activity_timer);
 
 	if (!ev_is_active(&doip_client->data_collection_timer)) {
 		ev_timer_start(doip_entity->loop, &doip_client->data_collection_timer);
@@ -1178,7 +1053,7 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 
 	/* peer disconnected or error occurred */
 	if (count <= 0) {
-		logd("peer disconnected or error occurred\n");
+		logd("%s\n", count == 0 ? "peer disconnected" : "system error");
 		doip_client->status = DoIP_Connection_Finalization;
 		goto finish_2;
 	}
@@ -1222,7 +1097,7 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	}
 
 	if ((count == 0) || (count < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK))) {
-		logd("peer disconnected or error occurred\n");
+		logd("%s\n", count == 0 ? "peer disconnected" : "system error");
 		doip_client->status = DoIP_Connection_Finalization;
 		goto finish_2;
 	}
@@ -1236,6 +1111,7 @@ static void tcp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 
 	switch (doip_pdu->payload_type) {
 		case Routing_Activation_Request:
+			ev_timer_stop(doip_client->doip_entity->loop, &doip_client->tcp_initial_activity_timer);
 			routing_activation_request_handler(doip_client);
 			break;
 		case Alive_Check_Request:
@@ -1274,11 +1150,8 @@ static void initial_activity_timer_callback(struct ev_loop *loop, ev_timer *w, i
 	doip_client_t *doip_client = (doip_client_t *)w->data;
 
 	ev_timer_stop(loop, w);
-
-	if (doip_client->status != DoIP_Connection_RoutingActivated) {
-		logd("initial_activity_time timeout(%fs timeout)\n", w->repeat);
-		doip_client->status = DoIP_Connection_Finalization;
-	}
+	logd("initial_activity_time timeout(%fs timeout)\n", w->repeat);
+	doip_client->status = DoIP_Connection_Finalization;
 }
 
 static void alive_check_timer_callback(struct ev_loop *loop, ev_timer *w, int e)
@@ -1343,9 +1216,9 @@ static void accept_cb(struct ev_loop *loop, ev_io *w, int e)
 	doip_assert(!!doip_client->doip_pdu.payload, "doip_malloc failed\n");
 
 	doip_client->watcher.data = doip_client;
-	doip_client->initial_activity_timer.data = doip_client;
-	doip_client->general_activity_timer.data = doip_client;
-	doip_client->alive_check_timer.data = doip_client;
+	doip_client->tcp_initial_activity_timer.data = doip_client;
+	doip_client->tcp_general_activity_timer.data = doip_client;
+	doip_client->tcp_alive_check_timer.data = doip_client;
 
 	INIT_LIST_HEAD(&doip_client->list);
 	doip_client->handler = connfd;
@@ -1359,14 +1232,18 @@ static void accept_cb(struct ev_loop *loop, ev_io *w, int e)
 	ev_io_init(&doip_client->watcher, tcp_read_cb, doip_client->handler, EV_READ);
 	ev_io_start(loop, &doip_client->watcher);
 
-	ev_timer_init(&doip_client->general_activity_timer, general_activity_timer_callback, doip_entity->general_activity_time/1e3, doip_entity->general_activity_time/1e3);
+	ev_timer_init(&doip_client->tcp_general_activity_timer, general_activity_timer_callback, \
+			doip_entity->tcp_general_activity_time * 1e-3, doip_entity->tcp_general_activity_time * 1e-3);
 
-	ev_timer_init(&doip_client->initial_activity_timer, initial_activity_timer_callback, doip_entity->initial_activity_time/1e3, doip_entity->initial_activity_time/1e3);
-	ev_timer_start(loop, &doip_client->initial_activity_timer);
+	ev_timer_init(&doip_client->tcp_initial_activity_timer, initial_activity_timer_callback, \
+			doip_entity->tcp_initial_activity_time * 1e-3, doip_entity->tcp_initial_activity_time * 1e-3);
+	ev_timer_start(loop, &doip_client->tcp_initial_activity_timer);
 
-	ev_timer_init(&doip_client->alive_check_timer, alive_check_timer_callback, doip_entity->alive_check_time/1e3, doip_entity->alive_check_time/1e3);
+	ev_timer_init(&doip_client->tcp_alive_check_timer, alive_check_timer_callback, \
+			doip_entity->tcp_alive_check_time * 1e-3, doip_entity->tcp_alive_check_time * 1e-3);
 
-	ev_timer_init(&doip_client->data_collection_timer, data_collection_timer_callback, DATA_COLLECTION_TIMEOUT, DATA_COLLECTION_TIMEOUT);
+	ev_timer_init(&doip_client->data_collection_timer, data_collection_timer_callback, DATA_COLLECTION_TIMEOUT, \
+			DATA_COLLECTION_TIMEOUT);
 
 	/* add client to list */
 	list_add(&doip_client->list, &doip_entity->tcp_server.head);
@@ -1419,7 +1296,7 @@ static void vehicle_identify_announce_timer_callback(struct ev_loop *loop, ev_ti
 
 	vehicle_identify_announce(doip_entity);
 
-	if (++count >= doip_entity->announce_count) {
+	if (++count >= doip_entity->doip_announce_num) {
 		count = 0;
 		ev_timer_stop(loop, w);
 	}
@@ -1456,7 +1333,7 @@ static int udp_server_init(doip_entity_t *doip_entity)
 	bzero(&doip_entity->udp_server.broadcast, sizeof(doip_entity->udp_server.broadcast));
 	doip_entity->udp_server.broadcast.sin_family = AF_INET;
 	doip_entity->udp_server.broadcast.sin_port = htobe16(UDP_DISCOVERY);
-	inet_pton(AF_INET, BROADCAST_ADDR, &doip_entity->udp_server.broadcast.sin_addr);
+	inet_pton(AF_INET, UDP_BROADCAST_ADDR, &doip_entity->udp_server.broadcast.sin_addr);
 
 	return udp_server->handler;
 
@@ -1482,7 +1359,8 @@ static void udp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	doip_server_t *udp_server = &doip_entity->udp_server;
 
 	socklen = sizeof(udp_server->target);
-	ssize_t count = recvfrom(w->fd, udp_server->doip_pdu.payload, udp_server->doip_pdu.payload_cap, 0, (struct sockaddr *)&udp_server->target, &socklen);
+	ssize_t count = recvfrom(w->fd, udp_server->doip_pdu.payload, udp_server->doip_pdu.payload_cap, 0, \
+			(struct sockaddr *)&udp_server->target, &socklen);
 	if (count == 0) {
 		/* no data readable */
 		goto finish;
@@ -1504,7 +1382,8 @@ static void udp_read_cb(struct ev_loop *loop, ev_io *w, int e)
 	 * port range (49 152…65 535)
 	 */
 	if (!tester_dynamic_port_verify(be16toh(udp_server->target.sin_port))) {
-		logd("dynamic port range [%d ~ %d], %d is not allowed\n", MIN_DYNAMIC_PORT, MAX_DYNAMIC_PORT, be16toh(udp_server->target.sin_port));
+		logd("dynamic port range [%d ~ %d], %d is not allowed\n", MIN_DYNAMIC_PORT, MAX_DYNAMIC_PORT, \
+				be16toh(udp_server->target.sin_port));
 		goto finish;
 	}
 
@@ -1554,7 +1433,8 @@ static void udp_server_start(struct ev_loop *loop, doip_entity_t *doip_entity)
 
 	ev_io_start(loop, &doip_entity->udp_server.watcher);
 
-	ev_timer_init(&doip_entity->udp_server.vehicle_identify_announce_timer, vehicle_identify_announce_timer_callback, doip_entity->announce_internal/1e3, doip_entity->announce_internal/1e3);
+	ev_timer_init(&doip_entity->udp_server.vehicle_identify_announce_timer, vehicle_identify_announce_timer_callback, \
+			doip_entity->doip_announce_interval * 1e-3, doip_entity->doip_announce_interval * 1e-3);
 
 	ev_timer_start(loop, &doip_entity->udp_server.vehicle_identify_announce_timer);
 }
@@ -1564,11 +1444,12 @@ static void tcp_client_cleanup(doip_client_t *doip_client)
 {
 	struct ev_loop *loop = doip_client->doip_entity->loop;
 
-	doip_assert(doip_client->handler == doip_client->watcher.fd, "doip_client->handler(%d) != doip_client->watcher->fd(%d)\n", doip_client->handler, doip_client->watcher.fd);
+	doip_assert(doip_client->handler == doip_client->watcher.fd, \
+			"doip_client->handler(%d) != doip_client->watcher->fd(%d)\n", doip_client->handler, doip_client->watcher.fd);
 	ev_io_stop(loop, &doip_client->watcher);
-	ev_timer_stop(loop, &doip_client->general_activity_timer);
-	ev_timer_stop(loop, &doip_client->initial_activity_timer);
-	ev_timer_stop(loop, &doip_client->alive_check_timer);
+	ev_timer_stop(loop, &doip_client->tcp_general_activity_timer);
+	ev_timer_stop(loop, &doip_client->tcp_initial_activity_timer);
+	ev_timer_stop(loop, &doip_client->tcp_alive_check_timer);
 	ev_timer_stop(loop, &doip_client->data_collection_timer);
 	close(doip_client->watcher.fd);
 	logd("tcp_client_cleanup, fd:%d\n", doip_client->handler);
@@ -1592,7 +1473,8 @@ static void doip_tcp_server_cleanup(doip_entity_t *doip_entity)
 	tcp_server->client_nums = 0;
 	INIT_LIST_HEAD(&tcp_server->head);
 
-	doip_assert(tcp_server->handler == tcp_server->watcher.fd, "tcp_server->handler(%d) != tcp_server->watcher->fd(%d)\n", tcp_server->handler, tcp_server->watcher.fd);
+	doip_assert(tcp_server->handler == tcp_server->watcher.fd, \
+			"tcp_server->handler(%d) != tcp_server->watcher->fd(%d)\n", tcp_server->handler, tcp_server->watcher.fd);
 	ev_io_stop(loop, &tcp_server->watcher);
 	close(tcp_server->watcher.fd);
 	tcp_server->handler = -1;
@@ -1611,25 +1493,6 @@ static void doip_udp_server_cleanup(doip_entity_t *doip_entity)
 	udp_server->status = DoIP_Connection_Socket_Uninitialized;
 }
 
-/* unix socket cleanup */
-static void doip_ipc_receiver_cleanup(doip_entity_t *doip_entity)
-{
-	doip_assert(doip_entity->doip_ipc_receiver.watcher.fd == doip_entity->doip_ipc_receiver.handler, "socket handler changed\n");
-	ev_io_stop(doip_entity->loop, &doip_entity->doip_ipc_receiver.watcher);
-	close(doip_entity->doip_ipc_receiver.watcher.fd);
-	doip_entity->doip_ipc_receiver.handler = -1;
-	doip_entity->doip_ipc_receiver.status = DoIP_Connection_Socket_Uninitialized;
-}
-
-static void doip_ipc_sender_cleanup(doip_entity_t *doip_entity)
-{
-	if (doip_entity->doip_ipc_sender.handler > 0) {
-		close(doip_entity->doip_ipc_sender.handler);
-		doip_entity->doip_ipc_sender.handler = -1;
-		doip_entity->doip_ipc_sender.status = DoIP_Connection_Socket_Uninitialized;
-	}
-}
-
 /* this function do all cleanup */
 static void doip_entity_cleanup(struct ev_loop *loop)
 {
@@ -1637,8 +1500,6 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 	doip_entity_t *doip_entity = ev_userdata(loop);
 	doip_server_t *tcp_server = &doip_entity->tcp_server;
 	doip_server_t *udp_server = &doip_entity->udp_server;
-	doip_ipc_t *doip_ipc_receiver = &doip_entity->doip_ipc_receiver;
-	doip_ipc_t *doip_ipc_sender = &doip_entity->doip_ipc_sender;
 
 	/* cleanup tcp server */
 	if (tcp_server->status == DoIP_Connection_Finalization) {
@@ -1650,19 +1511,6 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 		doip_udp_server_cleanup(doip_entity);
 	}
 
-	/* cleanup doip ipc socket */
-	if (doip_ipc_receiver->status == DoIP_Connection_Finalization) {
-		doip_ipc_receiver_cleanup(doip_entity);
-	}
-
-	if (doip_ipc_sender->status == DoIP_Connection_Finalization) {
-		doip_ipc_sender_cleanup(doip_entity);
-	}
-
-	if (tcp_server->client_nums == 0) {
-		return;
-	}
-
 	list_for_each_entry_safe(client, temp, &tcp_server->head, list) {
 		if (client->status == DoIP_Connection_Finalization) {
 			tcp_client_cleanup(client);
@@ -1670,105 +1518,6 @@ static void doip_entity_cleanup(struct ev_loop *loop)
 			--tcp_server->client_nums;
 		}
 	}
-}
-
-static int doip_ipc_receiver_init(doip_entity_t *doip_entity)
-{
-	struct sockaddr_un un;
-
-	if ((doip_entity->doip_ipc_receiver.handler = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
-		loge("socket failed(%s)\n", strerror(errno));
-		return -1;
-	}
-
-	fcntl(doip_entity->doip_ipc_receiver.handler, F_SETFL, fcntl(doip_entity->doip_ipc_receiver.handler, F_GETFL, 0) | O_NONBLOCK);
-
-	bzero(&un, sizeof(un));
-	un.sun_family = AF_UNIX;
-	if (strlen(doip_entity->doip_ipc_receiver.unix_socket_file) > 0) {
-		memcpy(un.sun_path, doip_entity->doip_ipc_receiver.unix_socket_file, sizeof(un.sun_path) - 1);
-	} else {
-		memcpy(un.sun_path, "/tmp/doip_ipc_receiver", sizeof(un.sun_path) - 1);
-	}
-
-	unlink(un.sun_path);
-
-	if (bind(doip_entity->doip_ipc_receiver.handler, (struct sockaddr *)&un, sizeof(un)) < 0) {
-		loge("bind failed(%s)\n", strerror(errno));
-		goto finish;
-	}
-
-	doip_entity->doip_ipc_receiver.capacity = MAX_DOIP_PDU_SIZE;
-	doip_entity->doip_ipc_receiver.status = DoIP_Connection_Socket_Initialized;
-	if (!doip_entity->doip_ipc_receiver.buffer) {
-		doip_entity->doip_ipc_receiver.buffer = doip_malloc(doip_entity->doip_ipc_receiver.capacity);
-		doip_assert(doip_entity->doip_ipc_receiver.buffer, "malloc failed\n");
-	}
-
-	return doip_entity->doip_ipc_receiver.handler;
-
-finish:
-	close(doip_entity->doip_ipc_receiver.handler);
-	doip_entity->doip_ipc_receiver.handler = -1;
-	return -1;
-}
-
-static int doip_ipc_sender_init(doip_entity_t *doip_entity)
-{
-	struct sockaddr_un un;
-
-	if ((doip_entity->doip_ipc_sender.handler = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
-		loge("socket failed(%s)\n", strerror(errno));
-		return -1;
-	}
-
-	fcntl(doip_entity->doip_ipc_sender.handler, F_SETFL, fcntl(doip_entity->doip_ipc_sender.handler, F_GETFL, 0) | O_NONBLOCK);
-
-	doip_entity->doip_ipc_sender.capacity = MAX_DOIP_PDU_SIZE;
-	if (!doip_entity->doip_ipc_sender.buffer) {
-		doip_entity->doip_ipc_sender.buffer = doip_malloc(doip_entity->doip_ipc_sender.capacity);
-		doip_assert(doip_entity->doip_ipc_sender.buffer, "malloc failed\n");
-	}
-
-	bzero(&un, sizeof(un));
-	un.sun_family = AF_UNIX;
-	if (strlen(doip_entity->doip_ipc_sender.unix_socket_file) > 0) {
-		memcpy(un.sun_path, doip_entity->doip_ipc_sender.unix_socket_file, sizeof(un.sun_path) - 1);
-	} else {
-		memcpy(un.sun_path, "/tmp/doip_ipc_sender", sizeof(un.sun_path) - 1);
-	}
-	doip_entity->doip_ipc_sender.status = DoIP_Connection_Socket_Initialized;
-
-	return doip_entity->doip_ipc_sender.handler;
-}
-
-static int diagnostic_message_respon_handler(uint8_t *data, int len)
-{
-	/* TODO */
-	return 0;
-}
-
-static void doip_ipc_receiver_read(struct ev_loop *loop, ev_io *w, int e)
-{
-	ssize_t count = 0;
-	doip_entity_t *doip_entity = ev_userdata(loop);
-
-	count = recv(w->fd, doip_entity->doip_ipc_receiver.buffer, doip_entity->doip_ipc_receiver.capacity, 0);
-	/* error occurred */
-	if (count < 0) {
-		doip_entity->doip_ipc_receiver.status = DoIP_Connection_Finalization;
-	}
-	if (count <= 0) {
-		return;
-	}
-
-	diagnostic_message_respon_handler(doip_entity->doip_ipc_receiver.buffer, count);
-}
-
-static void doip_ipc_receiver_start(struct ev_loop *loop, doip_entity_t *doip_entity)
-{
-	ev_io_init(&doip_entity->doip_ipc_receiver.watcher, doip_ipc_receiver_read, doip_entity->doip_ipc_receiver.handler, EV_READ);
-	ev_io_start(loop, &doip_entity->doip_ipc_receiver.watcher);
 }
 
 static void prepare_cb(struct ev_loop *loop, ev_prepare *w, int e)
@@ -1791,42 +1540,7 @@ static void prepare_cb(struct ev_loop *loop, ev_prepare *w, int e)
 		udp_server_start(loop, doip_entity);
 	}
 
-	if (doip_entity->doip_ipc_receiver.status == DoIP_Connection_Socket_Uninitialized) {
-		logd("doip_ipc_receiver_init\n");
-		if (doip_ipc_receiver_init(doip_entity) < 0) {
-			return;
-		}
-		doip_ipc_receiver_start(loop, doip_entity);
-	}
-
-	if (doip_entity->doip_ipc_sender.status == DoIP_Connection_Socket_Uninitialized) {
-		logd("doip_ipc_sender_init\n");
-		if (doip_ipc_sender_init(doip_entity) < 0) {
-			return;
-		}
-	}
-
 	doip_entity_cleanup(loop);
-}
-
-static char *doip_client_status(int status)
-{
-	switch (status) {
-		case DoIP_Connection_Socket_Uninitialized:
-			return "uninitialized";
-		case DoIP_Connection_Socket_Initialized:
-			return "initialized";
-		case DoIP_Connection_Pending_For_Authentication:
-			return "pending for authentication";
-		case DoIP_Connection_Pending_For_Confirmation:
-			return "pending for confirmation";
-		case DoIP_Connection_RoutingActivated:
-			return "routing activated";
-		case DoIP_Connection_Finalization:
-			return "finalized";
-		default:
-			return "unknow";
-	}
 }
 
 static void heartbeat_cb(struct ev_loop *loop, ev_timer *w, int e)
@@ -1856,7 +1570,8 @@ static void doip_entity_init(doip_entity_t *doip_entity)
 	ev_timer_start(doip_entity->loop, &doip_entity->heartbeat_w);
 }
 
-doip_entity_t *doip_entity_alloc()
+doip_entity_t *doip_entity_alloc(uint16_t logic_addr, uint16_t func_addr, const char *tcp_server, uint16_t tcp_port, \
+		const char *udp_server, uint16_t udp_port)
 {
 	doip_entity_t *doip_entity = doip_malloc(sizeof(*doip_entity));
 
@@ -1866,25 +1581,32 @@ doip_entity_t *doip_entity_alloc()
 
 	bzero(doip_entity, sizeof(*doip_entity));
 	doip_entity->loop = ev_default_loop(EVFLAG_NOENV);
-	doip_entity->udp_server.doip_pdu.payload_cap = MAX_DOIP_PDU_SIZE;
-	doip_entity->udp_server.doip_pdu.payload = doip_malloc(MAX_DOIP_PDU_SIZE);
+	doip_entity->udp_server.doip_pdu.payload_cap = DOIP_UDP_PDU_SIZE;
+	doip_entity->udp_server.doip_pdu.payload = doip_malloc(doip_entity->udp_server.doip_pdu.payload_cap);
 
 	doip_entity->tcp_server.doip_entity = doip_entity;
 	doip_entity->udp_server.doip_entity = doip_entity;
 
 	doip_assert(doip_entity->loop && doip_entity->udp_server.doip_pdu.payload , "doip_malloc failed\n");
 
-	doip_entity->initial_activity_time = T_TCP_Initial_Inactivity;
-	doip_entity->general_activity_time = T_TCP_General_Inactivity;
-	doip_entity->alive_check_time = T_TCP_Alive_Check;
-	doip_entity->announce_count = A_DoIP_Announce_Num;
-	doip_entity->announce_internal = A_DoIP_Announce_Interval;
-	doip_entity->announce_wait_time = A_DoIP_Announce_Wait;
+	doip_entity->logic_addr = logic_addr;
+	doip_entity->func_addr = func_addr;
+	doip_entity->tcp_server.port = tcp_port;
+	doip_entity->udp_server.port = udp_port;
+	memcpy(doip_entity->tcp_server.addr, tcp_server, MIN(sizeof(doip_entity->tcp_server.addr), strlen(tcp_server)));
+	memcpy(doip_entity->udp_server.addr, udp_server, MIN(sizeof(doip_entity->udp_server.addr), strlen(udp_server)));
+
+	doip_entity->tcp_initial_activity_time = T_TCP_Initial_Inactivity;
+	doip_entity->tcp_general_activity_time = T_TCP_General_Inactivity;
+	doip_entity->tcp_alive_check_time = T_TCP_Alive_Check;
+	doip_entity->doip_announce_num = A_DoIP_Announce_Num;
+	doip_entity->doip_announce_interval = A_DoIP_Announce_Interval;
+	doip_entity->doip_announce_wait = A_DoIP_Announce_Wait;
 
 	ev_set_userdata(doip_entity->loop, doip_entity);
 
 	INIT_LIST_HEAD(&doip_entity->tcp_server.head);
-	doip_entity->tcp_server.client_cap = MAX_CONNECTIONS;
+	doip_entity->tcp_server.client_cap = DOIP_CLIENTS_LIMITATION;
 
 	doip_entity_init(doip_entity);
 
@@ -1895,16 +1617,16 @@ static void doip_entity_info(doip_entity_t *doip_entity)
 {
 	doip_assert(!!doip_entity, "doip_entity invalid\n");
 
-	logd("doip entity basic info:\n");
-	logd("udp server %s:%d\n", doip_entity->udp_server.addr, doip_entity->udp_server.port);
-	logd("tcp server %s:%d\n", doip_entity->tcp_server.addr, doip_entity->tcp_server.port);
-	logd("announce_count:%d, announce_internal:%fms\n", doip_entity->announce_count, doip_entity->announce_internal);
-	logd("announce_wait_time:%f\n", doip_entity->announce_wait_time);
-	logd("general_activity_time:%f\n", doip_entity->general_activity_time);
-	logd("initial_activity_time:%f\n", doip_entity->initial_activity_time);
-	logd("logic_addr:0x%04x\n", doip_entity->sa);
+	logd("logic_addr:0x%04x\n", doip_entity->logic_addr);
 	logd("func_addr:0x%04x\n", doip_entity->func_addr);
 	logd("vin:%s\n", doip_entity->vin);
+	logd("udp server %s:%d\n", doip_entity->udp_server.addr, doip_entity->udp_server.port);
+	logd("tcp server %s:%d\n", doip_entity->tcp_server.addr, doip_entity->tcp_server.port);
+	logd("tcp_general_activity_time:%.fms\n", doip_entity->tcp_general_activity_time);
+	logd("tcp_initial_activity_time:%.fms\n", doip_entity->tcp_initial_activity_time);
+	logd("doip_announce_wait:%.fms\n", doip_entity->doip_announce_wait);
+	logd("doip_announce_num:%d, doip_announce_interval:%.fms\n", doip_entity->doip_announce_num, \
+			doip_entity->doip_announce_interval);
 }
 
 int doip_entity_start(doip_entity_t *doip_entity)
@@ -1916,6 +1638,5 @@ int doip_entity_start(doip_entity_t *doip_entity)
 	signal(SIGPIPE, SIG_IGN);
 	doip_entity_info(doip_entity);
 	ev_run(doip_entity->loop, 0);
-
 	return 0;
 }

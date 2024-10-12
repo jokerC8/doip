@@ -41,15 +41,20 @@
 #define A_Processing_Time                              2000    /* 2s */
 #define A_Vehicle_Discovery_Timer                      5000    /* 5s */
 
-#define BROADCAST_ADDR                                 "255.255.255.255"
+/*------------------------------------------------------------------------------------------------------------*/
+
 #define UDP_DISCOVERY                                  13400
 #define TCP_DATA                                       13400
+#define UDP_BROADCAST_ADDR                             "255.255.255.255"
+
+/*------------------------------------------------------------------------------------------------------------*/
 
 #define Header_NACK_Incorrect_Pattern_Format           0x00
 #define Header_NACK_Unknow_Payload_type                0x01
 #define Header_NACK_Message_Too_Large                  0x02
 #define Header_NACK_Out_Of_Memory                      0x03
 #define Header_NACK_Invalid_Payload_Len                0x04
+/*------------------------------------------------------------------------------------------------------------*/
 
 #define Routine_Activation_Unknow_Address              0x00
 #define Routine_Activation_All_Socket_Registered       0x01
@@ -66,6 +71,8 @@
 /* 0x12 ~ 0xDF reserved by ISO 13400 */
 /* 0xE0 ~ FE vehicle-manufactory reserved */
 /* 0xFF reserved by ISO 13400 */
+
+/*------------------------------------------------------------------------------------------------------------*/
 
 /* 0x00~0x01 reserved by ISO 13400 */
 #define Diagnostic_Message_Invalid_Source_Address      0x02
@@ -86,31 +93,9 @@ struct doip_entity;
 
 typedef struct doip_entity doip_entity_t;
 
-typedef struct doip_request {
-	uint16_t sa;
-	uint16_t ta;
-	uint8_t ta_type;
-	uint32_t len;
-	uint8_t data[4096];
-} doip_request_t;
-
-typedef struct doip_indication {
-	uint16_t sa;
-	uint16_t ta;
-	uint8_t ta_type;
-	uint32_t len;
-	uint8_t data[4096];
-} doip_indication_t;
-
-typedef struct doip_master {
-	doip_request_t request;
-	doip_indication_t indication;
-	uint8_t result;
-} doip_master_t;
-
 /*------------------------------------------------------------------------------------------------------------*/
 
-doip_entity_t *doip_entity_alloc();
+doip_entity_t *doip_entity_alloc(uint16_t logic_addr, uint16_t func_addr, const char *tcp_server, uint16_t tcp_port, const char *udp_server, uint16_t udp_port);
 
 int doip_entity_start();
 
@@ -118,33 +103,13 @@ void doip_entity_set_userdata(doip_entity_t *doip_entity, void *userdata);
 
 void *doip_entity_userdata(doip_entity_t *doip_entity);
 
-void doip_entity_set_initial_activity_time(doip_entity_t *doip_entity, int time);
-
-void doip_entity_set_general_activity_time(doip_entity_t *doip_entity, int time);
-
-void doip_entity_set_announce_wait_time(doip_entity_t *doip_entity, int time);
-
-void doip_entity_set_announce_count(doip_entity_t *doip_entity, int count);
-
-void doip_entity_set_announce_internal(doip_entity_t *doip_entity, int internal);
-
-void doip_entity_set_max_tcp_clients(doip_entity_t *doip_entity, int number);
-
-void doip_entity_set_tcp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port);
-
-void doip_entity_set_udp_server(doip_entity_t *doip_entity, const char *addr, unsigned short port);
-
-void doip_entity_set_logic_addr(doip_entity_t *doip_entity, unsigned short addr);
-
-void doip_entity_set_func_addr(doip_entity_t *doip_entity, unsigned short addr);
-
 void doip_entity_set_white_list(doip_entity_t *doip_entity, unsigned short *addr, int count);
 
+void doip_entity_set_eid(doip_entity_t *doip_entity, unsigned char *eid, int len);
+
+void doip_entity_set_gid(doip_entity_t *doip_entity, unsigned char *gid, int len);
+
 void doip_entity_set_vin(doip_entity_t *doip_entity, const char *vin, int len);
-
-void doip_entity_set_eid(doip_entity_t *doip_entity, unsigned char eid[6]);
-
-void doip_entity_set_gid(doip_entity_t *doip_entity, unsigned char gid[6]);
 
 /*------------------------------------------------------------------------------------------------------------*/
 
