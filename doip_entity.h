@@ -46,6 +46,8 @@
 #define UDP_DISCOVERY                                  13400
 #define TCP_DATA                                       13400
 #define UDP_BROADCAST_ADDR                             "255.255.255.255"
+#define UDS_SENDER_SOCKFILE                            "/tmp/uds_sender_sockfile"
+#define UDS_RECEIVER_SOCKFILE                          "/tmp/uds_receiver_sockfile"
 
 /*------------------------------------------------------------------------------------------------------------*/
 

@@ -9,6 +9,14 @@ void doip_stream_init(doip_stream_t *doip_stream, unsigned char *data, unsigned 
 	doip_stream->start = data;
 }
 
+void doip_stream_reset(doip_stream_t *doip_stream)
+{
+	if (doip_stream) {
+		doip_stream->curr = doip_stream->start;
+		doip_stream->len = 0;
+	}
+}
+
 unsigned int doip_stream_left_len(doip_stream_t *doip_stream)
 {
 	if (doip_stream->cap >= doip_stream->len) {

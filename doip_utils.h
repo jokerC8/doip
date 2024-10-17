@@ -18,7 +18,7 @@ void doip_free(void *ptr);
 	time(&cur); \
 	localtime_r(&cur, &tm); \
 	offset += strftime(buffer + offset, sizeof(buffer) - offset, "\033[32m%Y-%m-%d %H:%M:%S ", &tm); \
-	offset += snprintf(buffer + offset, sizeof(buffer) - offset, "[line:%d, func:%s] " format "\033[0m", __LINE__, __FUNCTION__, ##args); \
+	offset += snprintf(buffer + offset, sizeof(buffer) - offset, "[func:%s, line:%d] " format "\033[0m", __FUNCTION__, __LINE__, ##args); \
 	fprintf(stdout, "%s", buffer); \
 } while (0)
 
@@ -30,7 +30,7 @@ void doip_free(void *ptr);
 	time(&cur); \
 	localtime_r(&cur, &tm); \
 	offset += strftime(buffer + offset, sizeof(buffer) - offset, "\033[31m%Y-%m-%d %H:%M:%S ", &tm); \
-	offset += snprintf(buffer + offset, sizeof(buffer) - offset, "[line:%d, func:%s] " format "\033[0m", __LINE__, __FUNCTION__, ##args); \
+	offset += snprintf(buffer + offset, sizeof(buffer) - offset, "[func:%s, line:%d] " format "\033[0m", __FUNCTION__, __LINE__, ##args); \
 	fprintf(stderr, "%s", buffer); \
 } while (0)
 

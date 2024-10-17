@@ -14,6 +14,8 @@ typedef struct doip_stream doip_stream_t;
 
 void doip_stream_init(doip_stream_t *doip_stream, unsigned char *data, unsigned int len);
 
+void doip_stream_reset(doip_stream_t *doip_stream);
+
 uint32_t doip_stream_left_len(doip_stream_t *doip_stream);
 
 uint32_t doip_stream_len(doip_stream_t *doip_stream);
