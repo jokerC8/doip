@@ -1,8 +1,7 @@
 #ifndef __DOIP_ENTITY_H__
 #define __DOIP_ENTITY_H__
 
-#include "doip_utils.h"
-#include "doip_stream.h"
+#include <stdint.h>
 
 /*------------------------------------------------------------------------------------------------------------*/
 
@@ -43,12 +42,11 @@
 
 /*------------------------------------------------------------------------------------------------------------*/
 
-#define UDP_DISCOVERY                                  13400
 #define TCP_DATA                                       13400
+#define UDP_DISCOVERY                                  13400
 #define UDP_BROADCAST_ADDR                             "255.255.255.255"
-#define UDS_SENDER_SOCKFILE                            "/tmp/uds_sender_sockfile"
-#define UDS_RECEIVER_SOCKFILE                          "/tmp/uds_receiver_sockfile"
-
+#define UDS_REQUEST_SOCKFILE                           "/tmp/doip2uds"
+#define UDS_INDICATION_SOCKFILE                        "/tmp/uds2doip"
 /*------------------------------------------------------------------------------------------------------------*/
 
 #define Header_NACK_Incorrect_Pattern_Format           0x00
@@ -97,7 +95,8 @@ typedef struct doip_entity doip_entity_t;
 
 /*------------------------------------------------------------------------------------------------------------*/
 
-doip_entity_t *doip_entity_alloc(uint16_t logic_addr, uint16_t func_addr, const char *tcp_server, uint16_t tcp_port, const char *udp_server, uint16_t udp_port);
+doip_entity_t *doip_entity_alloc(uint16_t logic_addr, uint16_t func_addr, const char *tcp_server, \
+		uint16_t tcp_port, const char *udp_server, uint16_t udp_port);
 
 int doip_entity_start();
 
