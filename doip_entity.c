@@ -1669,10 +1669,21 @@ static ssize_t uds_respon_dispatch(doip_entity_t *doip_entity, uint8_t *data, in
 	}
 
 	if (!client) {
+		logd("logic_addr(0x%04x) not found int registered entry\n", sa);
 		return 0;
 	}
 
-	return doip_entity_tcp_send(client, data + 5, len - 5);
+	uint8_t buf[64] = {0};
+
+	doip_stream_init(&strm, buf, sizeof(buf));
+	assemble_doip_header(buf, sizeof(buf), Diagnostic_Message, 0);
+	doip_stream_forward(&strm, 8);
+	doip_stream_write_be16(&strm, ta);
+	doip_stream_write_be16(&strm, sa);
+	doip_stream_write_data(&strm, data + 5, len - 5);
+	update_doip_header_len(buf, sizeof(buf), doip_stream_len(&strm) - 8);
+	doip_hexdump(buf, doip_stream_len(&strm));
+	return doip_entity_tcp_send(client, doip_stream_start_ptr(&strm), doip_stream_len(&strm));
 }
 
 static void uds_indication_cb(struct ev_loop *loop, ev_io *w, int e)
